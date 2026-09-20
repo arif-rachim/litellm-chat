@@ -1,0 +1,28 @@
+# Contoh config LiteLLM proxy untuk lchat.
+# Jalankan: uvx 'litellm[proxy]' --config litellm.config.example.yaml --port 4000
+# Lalu:     export LCHAT_API_KEY=sk-lchat-local LCHAT_MODEL=qwen3.5-35b-a3b
+
+model_list:
+  # Qwen lewat vLLM. Jalankan vLLM dengan tool parser + reasoning parser untuk Qwen,
+  # misal: vllm serve Qwen/Qwen3.5-35B-A3B --enable-auto-tool-choice \
+  #          --tool-call-parser <parser-qwen> --reasoning-parser <parser-qwen>
+  # (cek nama parser di dokumentasi vLLM untuk versi Qwen yang dipakai).
+  - model_name: qwen3.5-35b-a3b
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen3.5-35B-A3B
+      api_base: http://localhost:8000/v1
+
+  # Alternatif: Ollama (ganti tag model sesuai `ollama list`).
+  # - model_name: qwen3.5-35b-a3b
+  #   litellm_params:
+  #     model: ollama_chat/<tag-model-qwen>
+  #     api_base: http://localhost:11434
+
+  # Alternatif: OpenRouter lewat LiteLLM.
+  # - model_name: qwen3.5-35b-a3b
+  #   litellm_params:
+  #     model: openrouter/qwen/qwen3.5-35b-a3b
+  #     api_key: os.environ/OPENROUTER_API_KEY
+
+general_settings:
+  master_key: sk-lchat-local
