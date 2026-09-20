@@ -296,14 +296,135 @@ func qwenXMLCalls(s string) []FunctionCall {
 	return out
 }
 
+var reTagOpen = regexp.MustCompile(`<([A-Za-z_][A-Za-z0-9_]*)>`)
+var reListMark = regexp.MustCompile(`^(\d+[.)]|[-*•])\s*`)
+
+// jsonSpan returns the end (exclusive) of the JSON object that starts at
+// s[i] == '{', honouring strings and escapes. ok is false when unbalanced.
+func jsonSpan(s string, i int) (int, bool) {
+	depth, inStr, esc := 0, false, false
+	for j := i; j < len(s); j++ {
+		c := s[j]
+		switch {
+		case esc:
+			esc = false
+		case inStr && c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return j + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// tagCalls parses the loosest text form a small model falls into once it
+// stops emitting native calls: "<read_file> {"path": "x"}", optionally closed
+// with "</read_file>", or "<todo>" around a numbered list. The tag has to be a
+// real tool name, so ordinary markup is never mistaken for a call. Seen in a
+// live session right after an image was attached.
+func tagCalls(content string, known func(string) bool) ([]FunctionCall, string) {
+	var fcs []FunctionCall
+	rest := content
+	for _, m := range reTagOpen.FindAllStringSubmatchIndex(content, -1) {
+		name := content[m[2]:m[3]]
+		if !known(name) {
+			continue
+		}
+		body := content[m[1]:]
+		args, end := "", 0
+		if i := strings.Index(body, "{"); i >= 0 && strings.TrimSpace(body[:i]) == "" {
+			if j, ok := jsonSpan(body, i); ok {
+				args, end = body[i:j], m[1]+j
+			}
+		}
+		if args == "" && normalizeToolName(name) == "todo" {
+			if k := strings.Index(body, "</"+name+">"); k >= 0 {
+				var items []string
+				for _, l := range strings.Split(body[:k], "\n") {
+					if l = reListMark.ReplaceAllString(strings.TrimSpace(l), ""); l != "" {
+						items = append(items, l)
+					}
+				}
+				if len(items) > 0 {
+					b, _ := json.Marshal(map[string]any{"items": items})
+					args, end = string(b), m[1]+k+len("</"+name+">")
+				}
+			}
+		}
+		if args == "" {
+			continue
+		}
+		if tail := content[end:]; strings.HasPrefix(strings.TrimSpace(tail), "</"+name+">") {
+			end += strings.Index(tail, "</"+name+">") + len("</"+name+">")
+		}
+		fcs = append(fcs, FunctionCall{Name: name, Arguments: args})
+		rest = strings.Replace(rest, content[m[0]:end], "", 1)
+	}
+	return fcs, rest
+}
+
+var reBareLine = regexp.MustCompile(`^\s*(?:->\s*|[-*]\s+)?` + "`?" + `([A-Za-z_][A-Za-z0-9_]*)` + "`?" + `\s*(\{.*)$`)
+
+// bareCalls parses "read_file {"path": "x"}" written as plain lines - the
+// very shape the base prompt's example uses ("-> bash {...}"), which a small
+// model imitates literally. One call per line; the name has to be a real tool
+// and the JSON has to close on that line.
+func bareCalls(content string, known func(string) bool) ([]FunctionCall, string) {
+	var fcs []FunctionCall
+	var kept []string
+	for _, line := range strings.Split(content, "\n") {
+		m := reBareLine.FindStringSubmatch(line)
+		if m == nil || !known(m[1]) {
+			kept = append(kept, line)
+			continue
+		}
+		end, ok := jsonSpan(m[2], 0)
+		if !ok || strings.Trim(strings.TrimSpace(m[2][end:]), "`") != "" {
+			kept = append(kept, line)
+			continue
+		}
+		fcs = append(fcs, FunctionCall{Name: m[1], Arguments: m[2][:end]})
+	}
+	if len(fcs) == 0 {
+		return nil, content
+	}
+	return fcs, strings.Join(kept, "\n")
+}
+
 // parseTextToolCalls extracts tool calls from reply text, trying formats in
 // order. known reports whether a name is a real tool; it guards the loose
-// json_block format against ordinary JSON code in an answer.
+// json_block format against ordinary JSON code in an answer. The tag form is
+// always tried last, whatever the profile says: it is what models fall into.
 func parseTextToolCalls(content string, formats []string, known func(string) bool) ([]ToolCall, string) {
 	var fcs []FunctionCall
 	rest := content
+	for _, extra := range []string{"tag_json", "bare_json"} {
+		found := false
+		for _, f := range formats {
+			found = found || f == extra
+		}
+		if !found {
+			formats = append(append([]string{}, formats...), extra)
+		}
+	}
 	for _, f := range formats {
 		switch f {
+		case "tag_json":
+			if calls, r := tagCalls(content, known); len(calls) > 0 {
+				fcs, rest = calls, r
+			}
+		case "bare_json":
+			if calls, r := bareCalls(content, known); len(calls) > 0 {
+				fcs, rest = calls, r
+			}
 		case "hermes":
 			for _, m := range reHermes.FindAllStringSubmatch(content, -1) {
 				inner := strings.TrimSpace(m[1])

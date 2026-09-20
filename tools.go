@@ -49,6 +49,7 @@ type ToolResult struct {
 	Mutated string // path written or edited
 	CheckOK bool   // auto-check ran and passed
 	Verify  bool   // bash command that counts as verification
+	Image   *Image // an image for the model to look at, sent right after this batch
 }
 
 var ignoredDirs = map[string]bool{
@@ -146,13 +147,40 @@ var tools = []*Tool{
 	},
 }
 
+// toolByName looks in both tool sets, blind to scope, so a call to a tool
+// that exists but is out of scope gets a correction about scope rather than
+// "no such tool".
 func toolByName(name string) *Tool {
-	for _, t := range tools {
+	for _, t := range append(append([]*Tool{}, tools...), taskTools...) {
 		if t.Name == name {
 			return t
 		}
 	}
 	return nil
+}
+
+func isTaskTool(name string) bool {
+	for _, t := range taskTools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// activeTools is the tool set the model may call: inside a subtask, todo is
+// hidden (the harness owns the plan) and subtask_done appears.
+func activeTools(task bool) []*Tool {
+	if !task {
+		return tools
+	}
+	var out []*Tool
+	for _, t := range tools {
+		if t.Name != "todo" {
+			out = append(out, t)
+		}
+	}
+	return append(out, taskTools...)
 }
 
 func toolNames() []string {
@@ -193,9 +221,9 @@ var argAliases = map[string]string{
 	"start_line": "offset", "line": "offset", "lines": "limit", "max_lines": "limit",
 }
 
-func toolSchemas() []any {
+func toolSchemas(task bool) []any {
 	var out []any
-	for _, t := range tools {
+	for _, t := range activeTools(task) {
 		props := map[string]any{}
 		for _, p := range t.Params {
 			s := map[string]any{"type": p.Type, "description": p.Desc}
@@ -394,8 +422,6 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-var reVerifyCmd = regexp.MustCompile(`(?i)(\btest\b|\btests\b|\bbuild\b|\blint\b|\bcheck\b|\btsc\b|vitest|jest|mocha|pytest|\bgo (test|build|vet)\b|\bcargo (test|build|check)\b|\bmake\b|^\s*node\s|\bpython3?\s|\bnpx\b)`)
-
 // childEnv is the environment for commands the agent runs, without lchat's
 // own settings and API keys.
 func childEnv() []string {
@@ -449,7 +475,7 @@ func runBash(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 	res := ToolResult{
 		Output: fmt.Sprintf("exit_code: %d\n%s%s", code, truncate(text, a.cfg.ToolMax), note),
 		Failed: code != 0,
-		Verify: reVerifyCmd.MatchString(command),
+		Verify: isVerifyCmd(command, a.env.VerifyCmds),
 		Status: fmt.Sprintf("exit %d · %.1fs · %d baris", code, dur, lines),
 	}
 	if strings.TrimSpace(out.buf.String()) != "" {
@@ -467,6 +493,26 @@ func runBash(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 
 func runRead(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 	path := a.resolve(str(args, "path"))
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		return ToolResult{Invalid: true, ErrKey: "read_dir", Status: "itu folder, bukan file", Output: correction(
+			"read_file: "+a.rel(path)+" is a directory.",
+			"read_file reads one text file.",
+			"Use list_files to see what is inside, then read_file on a file.", `list_files {"path": "`+a.rel(path)+`"}`)}
+	}
+	if imageExt[strings.ToLower(filepath.Ext(path))] != "" {
+		// Reading an image is the model asking to see it. Refusing with
+		// "binary file" sends it off to analyze pixels with scripts; attaching
+		// the image answers the real question in one step.
+		img, err := loadImage(path)
+		if err != nil {
+			return a.fileError("read_file", path, err)
+		}
+		return ToolResult{
+			Output: "This is an image, not text. It is attached to the message right after this result: look at it directly and describe what you see. Do not analyze it with scripts.",
+			Status: "gambar dilampirkan · " + img.label(),
+			Image:  &img,
+		}
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return a.fileError("read_file", path, err)
@@ -774,6 +820,9 @@ func runAsk(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 		return ToolResult{Status: "tidak dijawab",
 			Output: "[harness] The user pressed enter without answering. Choose the most reasonable option, say which one, and continue."}
 	}
+	if a.plan != nil { // a decision by the user is a fact about the world: it crosses subtasks
+		a.plan.Answers = append(a.plan.Answers, clip(str(args, "question"), 120)+" -> "+clip(ans, 120))
+	}
 	return ToolResult{Output: "The user answered: " + ans, Status: clip(ans, 60)}
 }
 
@@ -822,8 +871,73 @@ func runTodo(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 		}
 		todos = append(todos, t)
 	}
+	todos, note := a.auditTodos(todos)
 	a.todos = todos
-	return ToolResult{Output: "Plan updated.\n" + todoList(todos), Status: todoCounts(todos)}
+	a.todoMutations = a.mutations
+	res := ToolResult{Output: "Plan updated.\n" + todoList(todos), Status: todoCounts(todos)}
+	if note != "" {
+		res.Output += "\n\n" + note
+		res.Status += " · centang ditolak"
+	}
+	return res
+}
+
+// auditTodos keeps the checkmarks honest. The model owns the list; the harness
+// owns "done": an item may only become done when the work since the previous
+// plan update was verified, or when nothing was changed at all (a reading
+// step). A list that shrinks is announced, because a plan rewritten to fit
+// what got done is exactly the failure this exists to catch.
+func (a *Agent) auditTodos(next []Todo) ([]Todo, string) {
+	prevDone, prevOpen := map[string]bool{}, map[string]bool{}
+	for _, t := range a.todos {
+		if t.Status == "done" {
+			prevDone[t.Text] = true
+		} else {
+			prevOpen[t.Text] = true
+		}
+	}
+	mutatedSince := a.mutations > a.todoMutations
+	verified := a.turn != nil && a.turn.verified()
+	var demoted, milestone []string
+	seen := map[string]bool{}
+	for i, t := range next {
+		seen[t.Text] = true
+		if t.Status == "done" && !prevDone[t.Text] && mutatedSince {
+			if verified {
+				milestone = append(milestone, t.Text)
+			} else {
+				next[i].Status = "in_progress"
+				demoted = append(demoted, t.Text)
+			}
+		}
+	}
+	// A step closed with verified changes is a milestone: the harness will
+	// checkpoint the context after this batch. Reading steps are not one -
+	// compacting would throw away exactly what was just read.
+	if a.turn != nil && len(milestone) > 0 {
+		a.turn.milestone = milestone
+	}
+	removed := 0
+	for text := range prevOpen {
+		if !seen[text] {
+			removed++
+		}
+	}
+	if removed > 0 {
+		a.ui.Info(fmt.Sprintf("rencana diubah: %d langkah dihapus", removed))
+	}
+	if len(demoted) == 0 {
+		return next, ""
+	}
+	a.ui.Harness(fmt.Sprintf("%d centang todo ditolak: perubahan belum diverifikasi", len(demoted)))
+	how := "run the project's tests or build"
+	if len(a.env.VerifyCmds) > 0 {
+		how = "run `" + a.env.VerifyCmds[0] + "`"
+	}
+	return next, correction(
+		"These steps were not accepted as done: "+strings.Join(demoted, "; ")+".",
+		"Files changed since the plan was last updated and nothing verified that change. The harness keeps the checkmarks; a step is done when its result is proven, not when it is declared.",
+		"Verify first ("+how+"), then send the plan again with the step marked done.", "")
 }
 
 func todoList(ts []Todo) string {

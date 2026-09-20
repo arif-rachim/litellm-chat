@@ -232,6 +232,7 @@ type UI struct {
 	spin       chan struct{}
 	spinDone   chan struct{}
 	spinOn     bool
+	sink       func(kind, text string) // session log: every line the harness shows
 }
 
 type colTracker struct {
@@ -421,21 +422,33 @@ func (u *UI) Options(opts []string) {
 func (u *UI) MarkNewline() { u.col0 = true }
 
 func (u *UI) Harness(msg string) {
+	if u.sink != nil {
+		u.sink("harness", msg)
+	}
 	u.nl()
 	fmt.Fprintf(u.log, "%s\n", u.c(sgrYellow+sgrDim, "● [harness] "+msg))
 }
 
 func (u *UI) Info(msg string) {
+	if u.sink != nil {
+		u.sink("info", msg)
+	}
 	u.nl()
 	fmt.Fprintf(u.log, "%s\n", u.c(sgrDim, msg))
 }
 
 func (u *UI) Warn(msg string) {
+	if u.sink != nil {
+		u.sink("warn", msg)
+	}
 	u.nl()
 	fmt.Fprintf(u.log, "%s\n", u.c(sgrYellow, "! "+msg))
 }
 
 func (u *UI) Error(msg string) {
+	if u.sink != nil {
+		u.sink("error", msg)
+	}
 	u.nl()
 	fmt.Fprintf(u.log, "%s\n", u.c(sgrRed, "✗ "+msg))
 }

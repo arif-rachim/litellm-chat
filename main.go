@@ -104,15 +104,18 @@ func baseConfig() *Config {
 	loadDotEnv(dotEnvPaths()...)
 	configFile, _ = LoadConfigFile(configPath())
 	cfg := &Config{
-		BaseURL:    envOr("LCHAT_BASE_URL", firstNonEmpty(configFile.BaseURL, "http://localhost:4000")),
-		APIKey:     firstNonEmpty(getenv("LCHAT_API_KEY"), configFile.APIKey),
-		Model:      envOr("LCHAT_MODEL", firstNonEmpty(configFile.Model, "qwen3.5-35b-a3b")),
-		Ctx:        envInt("LCHAT_CTX", 0),
-		ToolMax:    envInt("LCHAT_TOOL_MAX", 8000),
-		MaxSteps:   30,
-		Think:      "auto",
-		Mode:       envOr("LCHAT_MODE", "ask"),
-		ModelsPath: defaultModelsPath(),
+		BaseURL:      envOr("LCHAT_BASE_URL", firstNonEmpty(configFile.BaseURL, "http://localhost:4000")),
+		APIKey:       firstNonEmpty(getenv("LCHAT_API_KEY"), configFile.APIKey),
+		Model:        envOr("LCHAT_MODEL", firstNonEmpty(configFile.Model, "qwen3.5-35b-a3b")),
+		Ctx:          envInt("LCHAT_CTX", 0),
+		ToolMax:      envInt("LCHAT_TOOL_MAX", 8000),
+		MaxSteps:     30,
+		Think:        "auto",
+		Mode:         envOr("LCHAT_MODE", "ask"),
+		PlannerModel: envOr("LCHAT_PLANNER_MODEL", configFile.PlannerModel),
+		SubSteps:     envInt("LCHAT_SUBTASK_STEPS", 8),
+		LogDir:       logDir(),
+		ModelsPath:   defaultModelsPath(),
 	}
 	// No LiteLLM configured but an OpenRouter key exists: talk to OpenRouter directly.
 	if or := getenv("OPENROUTER_API_KEY"); or != "" {
@@ -138,12 +141,15 @@ const usage = `lchat: agent coding mini untuk terminal (LiteLLM / OpenAI-compati
 Pakai:
   lchat [flag]                 mode interaktif
   lchat [flag] -p "tugas"      sekali jalan (jawaban ke stdout, aktivitas ke stderr)
+  lchat --task -p "tugas"      pecah tugas besar jadi subtask terverifikasi, lalu kerjakan satu per satu
   lchat -i shot.png -p "apa ini?"   kirim gambar
   lchat config                 atur endpoint, API key, dan model (dipandu)
   lchat probe [-m model] [--save]   deteksi cara thinking & tool call sebuah model
 
 Env: LCHAT_BASE_URL, LCHAT_API_KEY, LCHAT_MODEL, LCHAT_CTX, LCHAT_TOOL_MAX,
      LCHAT_TEMPERATURE, LCHAT_MODELS (file profil, default ~/.config/lchat/models.json)
+     LCHAT_PLANNER_MODEL (model penyusun rencana /task; kosong = model utama), LCHAT_SUBTASK_STEPS
+     LCHAT_LOG=off mematikan log sesi; LCHAT_LOG_DIR memindahkannya (default ~/.local/state/lchat/sessions)
      Tanpa LCHAT_BASE_URL/LCHAT_API_KEY tapi ada OPENROUTER_API_KEY: langsung ke OpenRouter.
      Semua variabel ini juga dibaca dari ./.env, .env di samping binary lchat,
      dan ~/.config/lchat/.env.
@@ -167,6 +173,10 @@ func main() {
 	fs.Func("i", "lampirkan gambar (boleh diulang)", func(v string) error { images = append(images, v); return nil })
 	fs.BoolVar(&cfg.Yolo, "yolo", false, "jalankan tool tanpa minta izin")
 	fs.IntVar(&cfg.MaxSteps, "max-steps", cfg.MaxSteps, "batas langkah per giliran")
+	fs.StringVar(&cfg.PlannerModel, "planner-model", cfg.PlannerModel, "model penyusun rencana untuk /task (kosong = model utama)")
+	fs.IntVar(&cfg.SubSteps, "subtask-steps", cfg.SubSteps, "anggaran langkah dasar per subtask di /task")
+	fs.BoolVar(&cfg.Task, "task", false, "pecah tugas -p jadi subtask terverifikasi")
+	noLog := fs.Bool("no-log", false, "jangan tulis log sesi (JSONL) ke ~/.local/state/lchat/sessions")
 	fs.StringVar(&cfg.Think, "think", cfg.Think, "mode thinking: auto | on | off")
 	fs.StringVar(&cfg.Mode, "mode", cfg.Mode, "mode kerja: plan | ask | auto (Tab untuk ganti)")
 	fs.BoolVar(&cfg.QuietThink, "quiet-think", false, "sembunyikan isi reasoning")
@@ -218,6 +228,18 @@ func main() {
 		os.Exit(1)
 	}
 	agent := NewAgent(cfg, ui, in.confirm, in.line, user, cwd)
+	if *noLog {
+		cfg.LogDir = ""
+	}
+	if cfg.LogDir != "" {
+		lg, err := OpenSessionLog(cfg.LogDir)
+		if err != nil {
+			ui.Warn("log sesi tidak bisa dibuat: " + err.Error())
+		} else {
+			agent.log, ui.sink = lg, lg.screen
+			defer lg.Close()
+		}
+	}
 
 	if cfg.APIKey == "" && !strings.Contains(cfg.BaseURL, "localhost") {
 		ui.Warn("belum ada API key. Jalankan `lchat config` atau ketik /config untuk mengaturnya.")
@@ -231,7 +253,11 @@ func main() {
 			}
 			agent.Attach(img)
 		}
-		err := runTurn(agent, *prompt, sigs)
+		run := agent.RunTurn
+		if cfg.Task {
+			run = agent.RunTask
+		}
+		err := runWith(agent, *prompt, sigs, run)
 		if !ui.outNL {
 			fmt.Println()
 		}
@@ -249,6 +275,12 @@ func main() {
 
 // runTurn runs one turn; Ctrl+C cancels the turn, not the program.
 func runTurn(a *Agent, input string, sigs chan os.Signal) error {
+	return runWith(a, input, sigs, a.RunTurn)
+}
+
+// runWith runs one request under Ctrl+C handling: a turn, or a decomposed
+// task, which treats the interrupt as cancelling the whole task.
+func runWith(a *Agent, input string, sigs chan os.Signal, run func(context.Context, string) error) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -258,7 +290,7 @@ func runTurn(a *Agent, input string, sigs chan os.Signal) error {
 		case <-done:
 		}
 	}()
-	err := a.RunTurn(ctx, input)
+	err := run(ctx, input)
 	close(done)
 	cancel()
 	switch {
@@ -445,6 +477,9 @@ func banner(a *Agent) {
 	}
 	a.ui.Info(fmt.Sprintf("lchat %s · %s · profil %s · thinking %s\n%s\nmode: %s · Tab ganti mode · Ctrl+V tempel gambar · /help · Ctrl+D keluar",
 		version, a.model, a.profile.Describe(), think, a.cwd, modeLabel(a.cfg.Mode)))
+	if a.log != nil {
+		a.ui.Info("log sesi: " + a.log.Path + " · /log")
+	}
 }
 
 // slashCmds drives three things at once: /help, Tab completion, and the
@@ -453,12 +488,14 @@ var slashCmds = []Completion{
 	{"/clear", "", "mulai percakapan baru"},
 	{"/config", "", "atur endpoint, API key, dan model (dipandu)"},
 	{"/model", "[filter]", "lihat / ganti model lewat pemilih (angka memilih, teks memfilter)"},
+	{"/task", "<permintaan>", "pecah tugas besar jadi subtask terverifikasi, kerjakan satu per satu"},
 	{"/mode", "[nama]", "plan | ask | auto (atau tekan Tab saat mengetik)"},
 	{"/think", "[mode]", "auto | on | off"},
 	{"/img", "<path>", "lampirkan gambar ke pesan berikutnya"},
 	{"/paste", "", "ambil gambar dari clipboard (sama dengan Ctrl+V)"},
 	{"/profile", "", "tampilkan profil model aktif (JSON)"},
 	{"/env", "", "tampilkan konteks environment yang dikirim ke model"},
+	{"/log", "", "path log sesi ini (JSONL), untuk dianalisis nanti"},
 	{"/help", "", "daftar perintah ini"},
 	{"/exit", "", "keluar"},
 }
@@ -503,8 +540,11 @@ func repl(a *Agent, in *input, sigs chan os.Signal) {
 			break
 		}
 		input := strings.TrimSpace(text)
-		if paths := imagePathsIn(input); len(paths) > 0 && in.ed == nil {
-			in.addPaths(paths) // no editor: catch paths typed on the line
+		if paths := imagePathsIn(input); len(paths) > 0 && !strings.HasPrefix(input, "/") {
+			// Pasted paths were attached at paste time; whatever is still in
+			// the text was typed or recalled from history, and the model must
+			// not be left with a bare path it cannot open.
+			in.addPaths(paths)
 			for _, p := range paths {
 				input = strings.TrimSpace(strings.ReplaceAll(input, p, ""))
 			}
@@ -513,7 +553,7 @@ func repl(a *Agent, in *input, sigs chan os.Signal) {
 			continue
 		}
 		if strings.HasPrefix(input, "/") {
-			if quit := command(a, in, input); quit {
+			if quit := command(a, in, input, sigs); quit {
 				return
 			}
 			continue
@@ -532,7 +572,7 @@ func repl(a *Agent, in *input, sigs chan os.Signal) {
 	}
 }
 
-func command(a *Agent, in *input, input string) (quit bool) {
+func command(a *Agent, in *input, input string, sigs chan os.Signal) (quit bool) {
 	f := strings.Fields(input)
 	switch f[0] {
 	case "/exit", "/quit", "/q":
@@ -551,6 +591,22 @@ func command(a *Agent, in *input, input string) (quit bool) {
 		in.addPaths(f[1:])
 	case "/paste":
 		in.fromClipboard()
+	case "/task":
+		goal := strings.TrimSpace(strings.TrimPrefix(input, "/task"))
+		if goal == "" {
+			a.ui.Warn("pakai: /task <permintaan>")
+			break
+		}
+		a.Attach(in.takeImages()...)
+		if err := runWith(a, goal, sigs, a.RunTask); err != nil && !isCanceled(err) {
+			a.ui.Error(err.Error())
+		}
+	case "/log":
+		if a.log == nil {
+			a.ui.Info("log sesi mati (LCHAT_LOG=off atau --no-log)")
+		} else {
+			a.ui.Info(a.log.Path)
+		}
 	case "/model":
 		changeModel(a, in, strings.Join(f[1:], " "))
 		a.ui.Info(fmt.Sprintf("model %s · profil %s", a.model, a.profile.Describe()))

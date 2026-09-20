@@ -207,10 +207,10 @@ func TestSlashCompletion(t *testing.T) {
 	}
 	// The list only offers what the typed prefix can still become.
 	e := &Editor{cmds: cmds}
-	if rows := e.menu("/c"); len(rows) != 2 || !strings.Contains(rows[0], "/clear") {
+	if rows := e.menu("/c", 80); len(rows) != 2 || !strings.Contains(rows[0], "/clear") {
 		t.Fatalf("suggestions for /c: %q", rows)
 	}
-	if rows := e.menu("/model q"); rows != nil {
+	if rows := e.menu("/model q", 80); rows != nil {
 		t.Fatalf("an argument is not a command word: %q", rows)
 	}
 	// Past the command word Tab is the mode switch again.
@@ -219,7 +219,214 @@ func TestSlashCompletion(t *testing.T) {
 		t.Fatalf("tab in an argument: line=%q mode=%q", line, mode)
 	}
 	// The suggestion rows are wiped before the line is handed over.
-	if _, out, _ := testEditorCmds("/c\r", nil, cmds); !strings.Contains(out, "\x1b[2A\n") {
+	if _, out, _ := testEditorCmds("/c\r", nil, cmds); !strings.HasSuffix(strings.TrimSuffix(out, "\x1b[?2004l"), "\r\x1b[J› /c\n") {
 		t.Fatalf("menu not cleared on enter: %q", out)
+	}
+}
+
+// tinyTerm applies the escape sequences the editor writes to a character grid,
+// so a test can assert on what the user would actually see.
+type tinyTerm struct {
+	w       int
+	rows    [][]rune
+	r, c    int
+	pending bool // cursor parked in the last column, waiting to wrap
+}
+
+func newTinyTerm(w int) *tinyTerm { return &tinyTerm{w: w, rows: [][]rune{{}}} }
+
+func (t *tinyTerm) row(i int) []rune {
+	for len(t.rows) <= i {
+		t.rows = append(t.rows, []rune{})
+	}
+	return t.rows[i]
+}
+
+// put writes one rune, giving a wide rune the two cells a terminal gives it.
+// The second cell holds filler that screen() drops again.
+func (t *tinyTerm) put(ch rune) {
+	cw := runeWidth(ch)
+	if cw == 0 {
+		return
+	}
+	if t.pending {
+		t.r, t.c, t.pending = t.r+1, 0, false
+	}
+	if t.c+cw > t.w {
+		t.r, t.c = t.r+1, 0
+	}
+	row := t.row(t.r)
+	for len(row) < t.c+cw {
+		row = append(row, ' ')
+	}
+	row[t.c] = ch
+	if cw == 2 {
+		row[t.c+1] = filler
+	}
+	t.rows[t.r] = row
+	if t.c += cw; t.c >= t.w {
+		t.pending = true
+	}
+}
+
+// filler marks the second cell of a wide rune.
+const filler = '\x00'
+
+func (t *tinyTerm) write(s string) {
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		switch {
+		case rs[i] == '\r':
+			t.c, t.pending = 0, false
+		case rs[i] == '\n':
+			t.r, t.pending = t.r+1, false
+			t.row(t.r)
+		case rs[i] == 27 && i+1 < len(rs) && rs[i+1] == '[':
+			j, num, private := i+2, 0, false
+			if j < len(rs) && rs[j] == '?' { // private mode, e.g. bracketed paste
+				j, private = j+1, true
+			}
+			for ; j < len(rs) && rs[j] >= '0' && rs[j] <= '9'; j++ {
+				num = num*10 + int(rs[j]-'0')
+			}
+			if j >= len(rs) {
+				return
+			}
+			if num == 0 {
+				num = 1
+			}
+			if private { // not a cursor movement: nothing to draw
+				i = j
+				continue
+			}
+			switch rs[j] {
+			case 'A':
+				t.r, t.pending = max(t.r-num, 0), false
+			case 'B':
+				t.r, t.pending = t.r+num, false
+			case 'C':
+				t.c, t.pending = t.c+num, false
+			case 'D':
+				t.c, t.pending = max(t.c-num, 0), false
+			case 'K': // erase to end of line
+				if row := t.row(t.r); len(row) > t.c {
+					t.rows[t.r] = row[:t.c]
+				}
+			case 'J': // erase to end of screen
+				if row := t.row(t.r); len(row) > t.c {
+					t.rows[t.r] = row[:t.c]
+				}
+				t.rows = t.rows[:t.r+1]
+			}
+			i = j
+		case rs[i] == 0xFE0F: // already counted with the rune before it
+		default:
+			t.put(rs[i])
+		}
+	}
+}
+
+// screen is what is on the grid, rows joined as the terminal would wrap them.
+func (t *tinyTerm) screen() string {
+	var b strings.Builder
+	for _, row := range t.rows {
+		b.WriteString(strings.TrimRight(strings.ReplaceAll(string(row), string(filler), ""), " "))
+	}
+	return b.String()
+}
+
+func TestLineEditorLongLineDoesNotRepeat(t *testing.T) {
+	const w = 40
+	long := strings.Repeat("panjang ", 12) + "selesai" // jauh lebih lebar dari 40 kolom
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader(long + "\r")), out: &out, cols: w}
+	line, err := e.ReadLine(func() string { return "› " })
+	if line != long || err != nil {
+		t.Fatalf("line: %q %v", line, err)
+	}
+	scr := newTinyTerm(w)
+	scr.write(out.String())
+	if got, want := scr.screen(), "› "+long; got != want {
+		t.Fatalf("layar menampilkan teks berulang / rusak:\n got: %q\nwant: %q", got, want)
+	}
+	// The whole thing must fit in the rows it actually needs, not one per keystroke.
+	if rows := len(scr.rows); rows > (len([]rune(long))+2)/w+2 {
+		t.Fatalf("terlalu banyak baris terpakai: %d", rows)
+	}
+}
+
+func TestLineEditorEditsWrappedLine(t *testing.T) {
+	const w = 30
+	// Type past the wrap, then go back and fix a character on the first row.
+	keys := strings.Repeat("x", 45) + "\x1b[D\x1b[D\x1b[D" + "Z" + "\r"
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader(keys)), out: &out, cols: w}
+	line, _ := e.ReadLine(func() string { return "› " })
+	want := strings.Repeat("x", 42) + "Z" + "xxx"
+	if line != want {
+		t.Fatalf("editing a wrapped line: %q", line)
+	}
+	scr := newTinyTerm(w)
+	scr.write(out.String())
+	if got := scr.screen(); got != "› "+want {
+		t.Fatalf("layar: %q", got)
+	}
+}
+
+func TestRuneWidth(t *testing.T) {
+	cases := []struct {
+		r rune
+		w int
+	}{
+		{'a', 1}, {'›', 1}, {'世', 2}, {'界', 2}, {'こ', 2}, {'한', 2},
+		{'😀', 2}, {'✅', 2}, {'\u0301', 0}, {'\uFE0F', 0}, {'\u200D', 0},
+	}
+	for _, c := range cases {
+		if got := runeWidth(c.r); got != c.w {
+			t.Errorf("runeWidth(%q) = %d, mau %d", c.r, got, c.w)
+		}
+	}
+	// advance() short-circuits on the sorted table, so it has to stay sorted.
+	for i := 1; i < len(wideRanges); i++ {
+		if wideRanges[i][0] <= wideRanges[i-1][1] {
+			t.Fatalf("wideRanges tidak urut di indeks %d: %v setelah %v", i, wideRanges[i], wideRanges[i-1])
+		}
+	}
+}
+
+func TestLineEditorWideRunes(t *testing.T) {
+	const w = 20
+	text := "halo 世界 こんにちは 😀 ok"
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader(text + "\r")), out: &out, cols: w}
+	line, err := e.ReadLine(func() string { return "› " })
+	if line != text || err != nil {
+		t.Fatalf("line: %q %v", line, err)
+	}
+	scr := newTinyTerm(w)
+	scr.write(out.String())
+	if got, want := scr.screen(), "› "+text; got != want {
+		t.Fatalf("layar dengan aksara lebar:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestLineEditorCaretAfterWideRunes(t *testing.T) {
+	const w = 24
+	// Type CJK, walk the caret back over two of them, and insert there.
+	keys := "世界中国語\x1b[D\x1b[D" + "X" + "\r"
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader(keys)), out: &out, cols: w}
+	line, _ := e.ReadLine(func() string { return "› " })
+	if want := "世界中X国語"; line != want {
+		t.Fatalf("menyisip di tengah aksara lebar: %q, mau %q", line, want)
+	}
+	// The caret must be reported two cells per CJK rune, not one.
+	if row, col := advance(0, 2, w, []rune("世界中")); row != 0 || col != 8 {
+		t.Fatalf("advance atas aksara lebar: row=%d col=%d, mau row=0 col=8", row, col)
+	}
+	scr := newTinyTerm(w)
+	scr.write(out.String())
+	if got := scr.screen(); got != "› 世界中X国語" {
+		t.Fatalf("layar: %q", got)
 	}
 }

@@ -10,17 +10,28 @@ Harness-nya yang membuat model kecil tetap terarah:
   - Tool call yang ditulis sebagai teks dikonversi jadi tool call beneran.
   - Nama tool atau argumen yang salah dibalas dengan koreksi berformat *Problem / Why / Next step / Example*.
   - Kalau `edit_file` tidak match, harness menunjukkan potongan file yang paling mirip.
-  - Aksi yang diulang terus dideteksi sebagai loop.
-  - Setelah 3 kesalahan yang sama berturut-turut, giliran dihentikan.
+  - Aksi yang diulang persis dideteksi sebagai loop.
+  - Kesalahan format yang sama 3x berturut-turut menghentikan giliran.
+- **Mencari solusi, bukan berputar.** Yang membedakan model kecil yang "mencoba-coba dengan arah" dari yang "mengulang-ulang":
+  - **Catatan percobaan.** Setiap langkah dan hasilnya disimpan ringkas dan ikut dikirim di setiap permintaan, di dalam pesan sistem yang selalu dibangun ulang — jadi tidak bisa hilang saat konteks dipangkas. Model selalu melihat apa yang sudah gagal.
+  - **Tanda kegagalan.** Output gagal diringkas jadi tanda yang tahan nomor baris dan nama file, sehingga lima perintah berbeda yang menabrak tembok yang sama tetap terhitung satu tembok.
+  - **Tangga eskalasi.** Tiap pengulangan mengubah *bentuk* tugasnya, bukan menambah omelan yang sama: (2×) tulis dugaan mana yang terbukti salah lalu satu hipotesis baru → (3×) wajib ganti jenis langkah, misalnya membaca file sebelum mengedit lagi → (4×) wajib `ask_user` dengan pilihan konkret → berikutnya giliran dihentikan dengan ringkasan apa yang sudah dicoba.
+  - Verifikasi yang lulus menghapus rentetan: pencarian dianggap mulai dari awal.
+  - **Osilasi dikenali.** File yang kembali ke isi yang pernah ada di giliran itu (A→B→A) berarti model membatalkan pekerjaannya sendiri — langsung diminta menyebut asumsi mana yang salah, bukan mencoba lagi.
+  - **Anggaran tanpa kemajuan.** Enam langkah tanpa bukti baru — tidak ada file baru dibaca, tidak ada perubahan, tidak ada jenis kegagalan baru, tidak ada verifikasi lulus — dan harness bertanya apa yang kurang, lalu menyuruh bertanya ke user, lalu berhenti. Menjalankan `ls` dan `echo` bukan kemajuan.
+  - **Baca sebelum edit kedua.** Setelah satu `edit_file` berhasil, edit berikutnya pada file yang sama ditolak sampai file itu dibaca ulang atau diverifikasi — salinan di konteks model sudah basi.
+- **`/task`: dekomposisi dengan done-condition.** Untuk tugas yang benar-benar besar, `/task <permintaan>` (atau `lchat --task -p`) meminta planner memecahnya jadi 2-8 subtask yang masing-masing punya **satu perintah `verify`** — dan subtask hanya bisa ditutup setelah harness sendiri melihat perintah itu exit 0. Tiap subtask jalan di konteks bersih dengan anggaran langkah kecil; yang menyeberang hanya fakta yang dicatat harness. Verifier yang sudah hijau sebelum mulai membuat subtasknya dilewati ("merah dulu"); subtask yang tidak muat dipecah oleh harness lewat planner; dua yang gagal beruntun membuang rencananya dan kembali ke satu giliran biasa. Planner boleh menjawab "ini satu langkah" sehingga salah-picu cuma memakan satu panggilan. `LCHAT_PLANNER_MODEL` memakai model lain untuk merencanakan; kosong = model utama.
+- **Konteks yang tidak pernah melewati satu milestone.** Begitu sebuah langkah `todo` ditutup dengan perubahan yang lulus verifikasi, harness memadatkan konteks giliran itu kembali ke permintaan asli. Yang menyeberang hanya *handoff* yang dicatat harness — langkah yang selesai, file yang berubah, perintah verifikasi yang lulus, path yang pernah dibaca — bukan transkrip. Model kecil selalu bekerja di jendela yang muat di kepalanya, tanpa planner terpisah.
 - **Reasoning.**
   - Thinking adaptif: nyala saat merencanakan dan setelah error, mati di langkah rutin.
-  - Rencana kerja (`todo`) diingatkan di setiap langkah.
+  - Rencana kerja (`todo`) diingatkan di setiap langkah. Daftarnya milik model, **centangnya milik harness**: sebuah langkah hanya bisa ditandai selesai kalau perubahannya sudah diverifikasi, dan daftar yang menyusut diumumkan.
   - Setelah gagal, model diminta merefleksikan penyebabnya dulu.
-  - Model wajib memverifikasi sebelum menyatakan selesai.
+  - **Selesai ditentukan exit code, bukan klaim.** Kalau model bilang selesai tanpa memverifikasi, harness menjalankan sendiri perintah verifikasi proyek (`go test`, `npm test`, …) lewat gerbang izin yang sama. Lulus → jawaban diterima; gagal → outputnya kembali ke model sebagai bukti. Yang dihitung "verifikasi" pun ketat: menjalankan `node x.js` bukan verifikasi, `npm test` iya.
 - **Bertanya balik.** Lewat tool `ask_user`, model bisa mengajukan pertanyaan pilihan ganda atau isian bebas saat keputusannya ada di tanganmu, alih-alih menebak.
 - **Tiga mode kerja** yang bisa diganti dengan Tab: `plan`, `ask`, dan `auto`.
-- **Gambar.** Screenshot bisa dikirim ke model lewat Ctrl+V, `/img`, atau paste path file.
+- **Gambar.** Screenshot bisa dikirim ke model lewat Ctrl+V, `/img`, paste path file, atau mengetik path-nya di pesan. Lampiran selalu disebut namanya di teks supaya model kecil sadar ada gambar, dan kalau model memanggil `read_file` pada file gambar, harness melampirkan gambarnya alih-alih menjawab "file biner".
 - **Auto-check** setelah menulis atau mengedit file: `node --check`, validasi JSON, dan `py_compile`. `tsc` hanya jalan dengan `--check-ts`.
+- **Log sesi.** Setiap sesi ditulis ke `~/.local/state/lchat/sessions/<waktu>.jsonl`: tiap request beserta apa yang harness tambahkan, tiap balasan dan tool call, tiap hasil tool, tiap koreksi harness, tiap baris layar. Gunanya satu: dibawa ke analisis untuk melihat di mana model (atau harness-nya) membuang langkah. `/log` menampilkan path-nya; `--no-log` atau `LCHAT_LOG=off` mematikannya. Isinya memuat output tool, jadi jangan dibagikan mentah.
 - **Profil model.** Semua hal yang spesifik ke model (cara switch thinking, sampling, format tool call, ukuran konteks) ada di profil. Kalau ganti model, jalankan `lchat probe`.
 
 ## Distribusi
@@ -92,6 +103,8 @@ Dari yang paling menang: flag di command line, environment variable, file `.env`
 | `LCHAT_TOOL_MAX` | `8000` | batas byte output tool yang dikirim ke model |
 | `LCHAT_TEMPERATURE` | dari profil | override temperature |
 | `LCHAT_MODELS` | `~/.config/lchat/models.json` | file profil model |
+| `LCHAT_LOG` | (nyala) | `off` mematikan log sesi |
+| `LCHAT_LOG_DIR` | `~/.local/state/lchat/sessions` | folder log sesi (JSONL, `0600`) |
 | `LCHAT_CONFIG` | `~/.config/lchat/config.json` | file hasil `/config` |
 
 **File `.env`.** Semua variabel di tabel ini, ditambah `OPENROUTER_API_KEY`, bisa ditaruh di `.env`. lchat mencarinya berurutan di folder kerja, di samping binary `lchat`, lalu di `~/.config/lchat/.env`. Variabel environment yang sudah di-set tetap menang. Isinya tidak diteruskan ke perintah yang dijalankan agent. Salin `.env.example` sebagai contoh. File `.env` sudah ada di `.gitignore`.
@@ -110,9 +123,9 @@ lchat config                            # atur endpoint, key, dan model (dipandu
 lchat probe -m qwen3.8-27b --save       # deteksi perilaku model baru, simpan profilnya
 ```
 
-Flag: `-m`, `-p`, `-i <gambar>`, `--yolo`, `--mode plan|ask|auto`, `--max-steps 30`, `--think auto|on|off`, `--quiet-think`, `--check-ts`, `--raw`, `-v`.
+Flag: `-m`, `-p`, `-i <gambar>`, `--task`, `--planner-model`, `--subtask-steps 8`, `--yolo`, `--mode plan|ask|auto`, `--max-steps 30`, `--think auto|on|off`, `--quiet-think`, `--check-ts`, `--raw`, `-v`.
 
-Perintah di REPL: `/config`, `/clear`, `/mode [nama]`, `/img <path>`, `/paste`, `/model [filter]`, `/profile`, `/think [auto|on|off]`, `/env`, `/help`, `/exit`. Ketik `/` lalu Tab untuk melengkapi nama perintah; daftar kandidatnya muncul sendiri sambil mengetik. `/model` membuka pemilih yang sama dengan wizard, dan `/model qwen` hanya memfilternya. Akhiri baris dengan `\` untuk input multi-baris.
+Perintah di REPL: `/config`, `/clear`, `/task <permintaan>`, `/mode [nama]`, `/img <path>`, `/paste`, `/model [filter]`, `/profile`, `/think [auto|on|off]`, `/env`, `/help`, `/exit`. Ketik `/` lalu Tab untuk melengkapi nama perintah; daftar kandidatnya muncul sendiri sambil mengetik. `/model` membuka pemilih yang sama dengan wizard, dan `/model qwen` hanya memfilternya. Akhiri baris dengan `\` untuk input multi-baris.
 
 ### Mode kerja
 
@@ -199,3 +212,11 @@ Nilai `control` yang tersedia: `body` (`on_body`/`off_body` digabung ke request)
 make test     # go vet + unit test (termasuk fake LLM server & probe)
 make build
 ```
+
+### Dokumentasi desain
+
+Kalau kamu (atau agen berikutnya) akan mengubah kodenya, mulai dari
+[`docs/harness.md`](docs/harness.md) — alasan di balik bentuk loop agennya,
+invarian yang tidak boleh dilanggar, dan apa yang sengaja belum dikerjakan.
+Indeksnya ada di [`docs/`](docs/README.md).
+

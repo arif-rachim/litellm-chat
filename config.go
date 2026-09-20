@@ -20,6 +20,8 @@ type ConfigFile struct {
 	BaseURL string `json:"base_url,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
 	Model   string `json:"model,omitempty"`
+
+	PlannerModel string `json:"planner_model,omitempty"` // /task: kosong = model utama
 }
 
 func configPath() string {

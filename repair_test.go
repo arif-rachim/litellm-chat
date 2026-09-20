@@ -131,3 +131,53 @@ func TestParseTextToolCalls(t *testing.T) {
 		t.Errorf("package.json snippet parsed as a tool call")
 	}
 }
+
+// Bentuk teks paling longgar yang dijatuhi model kecil (dari log sesi nyata):
+// "<read_file> {json}" dan "<todo>" berisi daftar bernomor.
+func TestTagJSONToolCalls(t *testing.T) {
+	known := func(n string) bool { return toolByName(normalizeToolName(n)) != nil }
+	content := "Saya akan memeriksa game code.\n\n<todo>\n1. Explore game directory structure\n2. Find bird image loading code\n</todo>\n\n<read_file> {\"path\": \"game/src\"}"
+	calls, rest := parseTextToolCalls(content, defaultToolFormat, known)
+	if len(calls) != 2 || calls[0].Function.Name != "todo" || calls[1].Function.Name != "read_file" {
+		t.Fatalf("calls: %+v", calls)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"Explore game directory structure"`) || calls[1].Function.Arguments != `{"path": "game/src"}` {
+		t.Fatalf("args: %q / %q", calls[0].Function.Arguments, calls[1].Function.Arguments)
+	}
+	if strings.Contains(rest, "<read_file>") || strings.Contains(rest, "<todo>") || !strings.Contains(rest, "Saya akan memeriksa") {
+		t.Fatalf("rest: %q", rest)
+	}
+	// Kurung bersarang dan tag penutup.
+	calls, rest = parseTextToolCalls(`<bash> {"command": "echo {a}", "timeout_sec": 5}</bash> lalu selesai`, defaultToolFormat, known)
+	if len(calls) != 1 || calls[0].Function.Arguments != `{"command": "echo {a}", "timeout_sec": 5}` || strings.TrimSpace(rest) != "lalu selesai" {
+		t.Fatalf("nested: %+v rest=%q", calls, rest)
+	}
+	// Tag yang bukan nama tool tidak pernah dianggap panggilan.
+	if calls, _ := parseTextToolCalls(`<div> {"x": 1}</div>`, defaultToolFormat, known); len(calls) != 0 {
+		t.Fatalf("markup biasa dianggap tool call: %+v", calls)
+	}
+}
+
+// Bentuk paling telanjang, persis contoh di prompt sistem ("-> bash {...}"):
+// satu panggilan per baris, tanpa tag apa pun (dari log sesi 15-24-56).
+func TestBareJSONToolCalls(t *testing.T) {
+	known := func(n string) bool { return toolByName(normalizeToolName(n)) != nil }
+	content := "I'll examine the game code. Let me start by reading the game files.\n\nread_file {\"path\": \"game/src/game.js\"}\nread_file {\"path\": \"game/src/bird.js\"}\n-> bash {\"command\": \"npm test\"}"
+	calls, rest := parseTextToolCalls(content, defaultToolFormat, known)
+	if len(calls) != 3 || calls[0].Function.Name != "read_file" || calls[2].Function.Name != "bash" {
+		t.Fatalf("calls: %+v", calls)
+	}
+	if calls[1].Function.Arguments != `{"path": "game/src/bird.js"}` || calls[2].Function.Arguments != `{"command": "npm test"}` {
+		t.Fatalf("args: %q / %q", calls[1].Function.Arguments, calls[2].Function.Arguments)
+	}
+	if strings.Contains(rest, "read_file") || !strings.Contains(rest, "examine the game code") {
+		t.Fatalf("rest: %q", rest)
+	}
+	// Prosa yang menyebut nama tool, JSON yang tidak tertutup, atau nama yang
+	// bukan tool: bukan panggilan.
+	for _, s := range []string{"read_file is the tool to use here.", "read_file {\"path\": \"x\"", "frobnicate {\"a\": 1}", "the config is {\"a\": 1}"} {
+		if calls, _ := parseTextToolCalls(s, defaultToolFormat, known); len(calls) != 0 {
+			t.Fatalf("%q dianggap tool call: %+v", s, calls)
+		}
+	}
+}
