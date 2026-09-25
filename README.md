@@ -1,202 +1,202 @@
 # lchat
 
-Agent coding mini untuk terminal, versi kecil dari Claude Code. Satu binary Go static (~7 MB, tanpa dependency). Model dipanggil lewat LiteLLM atau endpoint lain yang OpenAI-compatible. Dirancang untuk model kecil seperti Qwen3.5-35B-A3B.
+A mini coding agent for the terminal, a small version of Claude Code. A single static Go binary (~7 MB, no dependencies). Models are called through LiteLLM or any other OpenAI-compatible endpoint. Designed for small models such as Qwen3.5-35B-A3B.
 
-Harness-nya yang membuat model kecil tetap terarah:
+The harness is what keeps small models on track:
 
-- **Kenal environment.** OS, tool yang terpasang, tipe proyek, `scripts` di `package.json`, dan pohon file dikirim di awal. Model tidak perlu buang langkah untuk eksplorasi.
-- **Mengingatkan kalau model salah.**
-  - JSON argumen yang rusak diperbaiki otomatis.
-  - Tool call yang ditulis sebagai teks dikonversi jadi tool call beneran.
-  - Nama tool atau argumen yang salah dibalas dengan koreksi berformat *Problem / Why / Next step / Example*.
-  - Kalau `edit_file` tidak match, harness menunjukkan potongan file yang paling mirip.
-  - Aksi yang diulang persis dideteksi sebagai loop.
-  - Kesalahan format yang sama 3x berturut-turut menghentikan giliran.
-- **Mencari solusi, bukan berputar.** Yang membedakan model kecil yang "mencoba-coba dengan arah" dari yang "mengulang-ulang":
-  - **Catatan percobaan.** Setiap langkah dan hasilnya disimpan ringkas dan ikut dikirim di setiap permintaan, di dalam pesan sistem yang selalu dibangun ulang — jadi tidak bisa hilang saat konteks dipangkas. Model selalu melihat apa yang sudah gagal.
-  - **Tanda kegagalan.** Output gagal diringkas jadi tanda yang tahan nomor baris dan nama file, sehingga lima perintah berbeda yang menabrak tembok yang sama tetap terhitung satu tembok.
-  - **Tangga eskalasi.** Tiap pengulangan mengubah *bentuk* tugasnya, bukan menambah omelan yang sama: (2×) tulis dugaan mana yang terbukti salah lalu satu hipotesis baru → (3×) wajib ganti jenis langkah, misalnya membaca file sebelum mengedit lagi → (4×) wajib `ask_user` dengan pilihan konkret → berikutnya giliran dihentikan dengan ringkasan apa yang sudah dicoba.
-  - Verifikasi yang lulus menghapus rentetan: pencarian dianggap mulai dari awal.
-  - **Osilasi dikenali.** File yang kembali ke isi yang pernah ada di giliran itu (A→B→A) berarti model membatalkan pekerjaannya sendiri — langsung diminta menyebut asumsi mana yang salah, bukan mencoba lagi.
-  - **Anggaran tanpa kemajuan.** Enam langkah tanpa bukti baru — tidak ada file baru dibaca, tidak ada perubahan, tidak ada jenis kegagalan baru, tidak ada verifikasi lulus — dan harness bertanya apa yang kurang, lalu menyuruh bertanya ke user, lalu berhenti. Menjalankan `ls` dan `echo` bukan kemajuan.
-  - **Baca sebelum edit kedua.** Setelah satu `edit_file` berhasil, edit berikutnya pada file yang sama ditolak sampai file itu dibaca ulang atau diverifikasi — salinan di konteks model sudah basi.
-- **`/task`: dekomposisi dengan done-condition.** Untuk tugas yang benar-benar besar, `/task <permintaan>` (atau `lchat --task -p`) meminta planner memecahnya jadi 2-8 subtask yang masing-masing punya **satu perintah `verify`** — dan subtask hanya bisa ditutup setelah harness sendiri melihat perintah itu exit 0. Tiap subtask jalan di konteks bersih dengan anggaran langkah kecil; yang menyeberang hanya fakta yang dicatat harness. Verifier yang sudah hijau sebelum mulai membuat subtasknya dilewati ("merah dulu"); subtask yang tidak muat dipecah oleh harness lewat planner; dua yang gagal beruntun membuang rencananya dan kembali ke satu giliran biasa. Planner boleh menjawab "ini satu langkah" sehingga salah-picu cuma memakan satu panggilan. `LCHAT_PLANNER_MODEL` memakai model lain untuk merencanakan; kosong = model utama.
-- **Konteks yang tidak pernah melewati satu milestone.** Begitu sebuah langkah `todo` ditutup dengan perubahan yang lulus verifikasi, harness memadatkan konteks giliran itu kembali ke permintaan asli. Yang menyeberang hanya *handoff* yang dicatat harness — langkah yang selesai, file yang berubah, perintah verifikasi yang lulus, path yang pernah dibaca — bukan transkrip. Model kecil selalu bekerja di jendela yang muat di kepalanya, tanpa planner terpisah.
+- **Knows the environment.** The OS, installed tools, project type, `scripts` in `package.json`, and the file tree are sent up front. The model doesn't need to waste steps exploring.
+- **Reminds the model when it makes mistakes.**
+  - Broken JSON arguments are repaired automatically.
+  - Tool calls written as text are converted into real tool calls.
+  - Wrong tool names or arguments are answered with a correction formatted as *Problem / Why / Next step / Example*.
+  - If `edit_file` doesn't match, the harness shows the most similar snippet of the file.
+  - Exactly repeated actions are detected as a loop.
+  - The same formatting mistake 3x in a row ends the turn.
+- **Searches for a solution instead of going in circles.** What separates a small model that "experiments with direction" from one that "keeps repeating itself":
+  - **Attempt log.** Every step and its result is stored concisely and sent with every request, inside a system message that is always rebuilt — so it can't be lost when the context is trimmed. The model always sees what has already failed.
+  - **Failure signatures.** Failed output is summarized into a signature that is robust to line numbers and file names, so five different commands hitting the same wall still count as one wall.
+  - **Escalation ladder.** Each repetition changes the *shape* of the task rather than adding the same scolding: (2×) write down which guess was proven wrong and one new hypothesis → (3×) must switch the kind of step, e.g. read the file before editing again → (4×) must `ask_user` with concrete options → after that the turn is stopped with a summary of what was tried.
+  - A passing verification clears the streak: the search is considered to start over.
+  - **Oscillation is recognized.** A file returning to content it already had in that turn (A→B→A) means the model is undoing its own work — it is immediately asked to name which assumption was wrong, rather than trying again.
+  - **No-progress budget.** Six steps without new evidence — no new file read, no change, no new kind of failure, no passing verification — and the harness asks what is missing, then tells it to ask the user, then stops. Running `ls` and `echo` is not progress.
+  - **Read before the second edit.** After one successful `edit_file`, the next edit to the same file is rejected until that file is re-read or verified — the copy in the model's context is already stale.
+- **`/task`: decomposition with a done-condition.** For truly large tasks, `/task <request>` (or `lchat --task -p`) asks a planner to break it into 2-8 subtasks, each with **one `verify` command** — and a subtask can only be closed after the harness itself sees that command exit 0. Each subtask runs in a clean context with a small step budget; only facts recorded by the harness carry over. A subtask whose verifier is already green before it starts is skipped ("red first"); a subtask that doesn't fit is split by the harness via the planner; two consecutive failures discard the plan and fall back to a single regular turn. The planner may answer "this is one step", so a false trigger only costs one call. `LCHAT_PLANNER_MODEL` uses a different model for planning; empty = the main model.
+- **A context that never spans more than one milestone.** As soon as a `todo` step is closed with a change that passes verification, the harness compacts that turn's context back to the original request. Only the *handoff* recorded by the harness carries over — completed steps, changed files, passing verification commands, paths that were read — not the transcript. The small model always works in a window that fits in its head, without a separate planner.
 - **Reasoning.**
-  - Thinking adaptif: nyala saat merencanakan dan setelah error, mati di langkah rutin.
-  - Rencana kerja (`todo`) diingatkan di setiap langkah. Daftarnya milik model, **centangnya milik harness**: sebuah langkah hanya bisa ditandai selesai kalau perubahannya sudah diverifikasi, dan daftar yang menyusut diumumkan.
-  - Setelah gagal, model diminta merefleksikan penyebabnya dulu.
-  - **Selesai ditentukan exit code, bukan klaim.** Kalau model bilang selesai tanpa memverifikasi, harness menjalankan sendiri perintah verifikasi proyek (`go test`, `npm test`, …) lewat gerbang izin yang sama. Lulus → jawaban diterima; gagal → outputnya kembali ke model sebagai bukti. Yang dihitung "verifikasi" pun ketat: menjalankan `node x.js` bukan verifikasi, `npm test` iya.
-- **Bertanya balik.** Lewat tool `ask_user`, model bisa mengajukan pertanyaan pilihan ganda atau isian bebas saat keputusannya ada di tanganmu, alih-alih menebak.
-- **Tiga mode kerja** yang bisa diganti dengan Tab: `plan`, `ask`, dan `auto`.
-- **Gambar.** Screenshot bisa dikirim ke model lewat Ctrl+V, `/img`, paste path file, atau mengetik path-nya di pesan. Lampiran selalu disebut namanya di teks supaya model kecil sadar ada gambar, dan kalau model memanggil `read_file` pada file gambar, harness melampirkan gambarnya alih-alih menjawab "file biner".
-- **Auto-check** setelah menulis atau mengedit file: `node --check`, validasi JSON, dan `py_compile`. `tsc` hanya jalan dengan `--check-ts`.
-- **Log sesi.** Setiap sesi ditulis ke `~/.local/state/lchat/sessions/<waktu>.jsonl`: tiap request beserta apa yang harness tambahkan, tiap balasan dan tool call, tiap hasil tool, tiap koreksi harness, tiap baris layar. Gunanya satu: dibawa ke analisis untuk melihat di mana model (atau harness-nya) membuang langkah. `/log` menampilkan path-nya; `--no-log` atau `LCHAT_LOG=off` mematikannya. Isinya memuat output tool, jadi jangan dibagikan mentah.
-- **Profil model.** Semua hal yang spesifik ke model (cara switch thinking, sampling, format tool call, ukuran konteks) ada di profil. Kalau ganti model, jalankan `lchat probe`.
+  - Adaptive thinking: on while planning and after errors, off during routine steps.
+  - The work plan (`todo`) is recalled at every step. The list belongs to the model, **the checkmarks belong to the harness**: a step can only be marked done if its change has been verified, and a shrinking list is announced.
+  - After a failure, the model is asked to reflect on the cause first.
+  - **Done is decided by exit code, not by claims.** If the model says it's done without verifying, the harness itself runs the project's verification command (`go test`, `npm test`, …) through the same permission gate. Pass → the answer is accepted; fail → the output goes back to the model as evidence. What counts as "verification" is strict too: running `node x.js` is not verification, `npm test` is.
+- **Asks back.** Through the `ask_user` tool, the model can ask multiple-choice or free-form questions when the decision is in your hands, instead of guessing.
+- **Three work modes** that can be switched with Tab: `plan`, `ask`, and `auto`.
+- **Images.** Screenshots can be sent to the model via Ctrl+V, `/img`, pasting a file path, or typing its path in the message. Attachments are always named in the text so that small models are aware there is an image, and if the model calls `read_file` on an image file, the harness attaches the image instead of answering "binary file".
+- **Auto-check** after writing or editing a file: `node --check`, JSON validation, and `py_compile`. `tsc` only runs with `--check-ts`.
+- **Session log.** Every session is written to `~/.local/state/lchat/sessions/<time>.jsonl`: every request along with what the harness added, every reply and tool call, every tool result, every harness correction, every screen line. It has one purpose: to be taken into analysis to see where the model (or its harness) wastes steps. `/log` shows its path; `--no-log` or `LCHAT_LOG=off` turns it off. It contains tool output, so don't share it raw.
+- **Model profiles.** Everything model-specific (how to switch thinking, sampling, tool call format, context size) lives in a profile. If you switch models, run `lchat probe`.
 
-## Distribusi
+## Distribution
 
-Hasil build adalah **satu file yang berdiri sendiri**: statically linked, tanpa runtime, library, atau file pendamping. Cukup salin filenya ke mesin tujuan.
+The build output is **a single self-contained file**: statically linked, with no runtime, libraries, or companion files. Just copy the file to the target machine.
 
 ```bash
-./release.sh v0.1.0      # atau: make release
+./release.sh v0.1.0      # or: make release
 ```
 
-Hasilnya di `dist/`:
+The output is in `dist/`:
 
-| File | Ukuran | Untuk |
+| File | Size | For |
 |---|---|---|
-| `lchat-linux-amd64` | 7,2 MB (3,1 MB setelah gzip) | PC/server Intel atau AMD |
-| `lchat-linux-arm64` | 6,7 MB (2,8 MB setelah gzip) | Raspberry Pi, server ARM |
-| `SHA256SUMS` | | untuk memverifikasi unduhan |
+| `lchat-linux-amd64` | 7.2 MB (3.1 MB gzipped) | Intel or AMD PCs/servers |
+| `lchat-linux-arm64` | 6.7 MB (2.8 MB gzipped) | Raspberry Pi, ARM servers |
+| `SHA256SUMS` | | for verifying the download |
 
-Di mesin tujuan:
+On the target machine:
 
 ```bash
 install -Dm755 lchat-linux-amd64 ~/.local/bin/lchat
 lchat -version
-lchat config        # atur endpoint, key, dan model
+lchat config        # set up endpoint, key, and model
 ```
 
-Yang perlu diingat saat membagikan: jangan ikut menyalin `.env` atau `~/.config/lchat/config.json`, karena keduanya berisi API key. Binary-nya sendiri tidak memuat key apa pun.
+Something to keep in mind when sharing: don't copy `.env` or `~/.config/lchat/config.json` along with it, because both contain API keys. The binary itself doesn't contain any key.
 
 ## Install
 
 ```bash
-sudo apt install golang-go      # Go 1.22+ (atau pakai Go yang sudah ada)
-make install                    # build lalu copy ke ~/.local/bin/lchat
+sudo apt install golang-go      # Go 1.22+ (or use an existing Go)
+make install                    # build then copy to ~/.local/bin/lchat
 ```
 
-Tanpa `make`:
+Without `make`:
 
 ```bash
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o lchat . && install -Dm755 lchat ~/.local/bin/lchat
 ```
 
-## Konfigurasi
+## Configuration
 
-Cara paling mudah: jalankan wizard-nya.
+The easiest way: run the wizard.
 
 ```bash
-lchat config        # atau ketik /config di dalam sesi
+lchat config        # or type /config inside a session
 ```
 
-Wizard menanyakan empat hal, berurutan:
+The wizard asks four things, in order:
 
-1. **Endpoint**: OpenRouter langsung, atau LiteLLM / endpoint OpenAI-compatible lain (alamatnya diisi sendiri).
-2. **API key**, diketik tersamar. Enter berarti pakai yang tersimpan.
-3. **Model**: daftarnya diambil otomatis dari endpoint memakai key tadi, lengkap dengan ukuran konteks, dukungan tool dan gambar, serta harga per 1 juta token. Di pemilih ini **angka memilih, teks memfilter**: mengetik `qwen` hanya mempersempit daftar, yang benar-benar memilih adalah nomor yang diketik sesudahnya. `n`/`p` pindah halaman, `=id` memaksa id yang tidak ada di daftar, Enter kosong membatalkan.
-4. **Probe**: opsional, untuk mengenali cara model itu menyalakan thinking, lalu menyimpannya sebagai profil.
+1. **Endpoint**: OpenRouter directly, or LiteLLM / another OpenAI-compatible endpoint (you fill in the address yourself).
+2. **API key**, typed masked. Enter means use the saved one.
+3. **Model**: the list is fetched automatically from the endpoint using that key, complete with context size, tool and image support, and price per 1 million tokens. In this picker **numbers select, text filters**: typing `qwen` only narrows the list; what actually selects is the number typed afterwards. `n`/`p` change pages, `=id` forces an id that isn't in the list, an empty Enter cancels.
+4. **Probe**: optional, to detect how that model turns on thinking, then save it as a profile.
 
-Hasilnya disimpan di `~/.config/lchat/config.json` dengan izin `600`, dan langsung dipakai sesi yang sedang berjalan.
+The result is saved in `~/.config/lchat/config.json` with `600` permissions, and is used immediately by the running session.
 
-### Sumber konfigurasi dan urutannya
+### Configuration sources and their order
 
-Dari yang paling menang: flag di command line, environment variable, file `.env`, lalu `config.json` dari wizard. Kalau ada yang menimpa hasil wizard, lchat memberi tahu saat menyimpan.
+From highest priority: command-line flags, environment variables, the `.env` file, then `config.json` from the wizard. If something overrides the wizard's result, lchat tells you when saving.
 
-| Env | Default | Keterangan |
+| Env | Default | Description |
 |---|---|---|
-| `LCHAT_BASE_URL` | `http://localhost:4000` | LiteLLM proxy (atau endpoint OpenAI-compatible lain) |
-| `LCHAT_API_KEY` | | master key LiteLLM / API key |
-| `LCHAT_MODEL` | `qwen3.5-35b-a3b` | nama/alias model |
-| `LCHAT_CTX` | dari profil | batas konteks (token) |
-| `LCHAT_TOOL_MAX` | `8000` | batas byte output tool yang dikirim ke model |
-| `LCHAT_TEMPERATURE` | dari profil | override temperature |
-| `LCHAT_MODELS` | `~/.config/lchat/models.json` | file profil model |
-| `LCHAT_LOG` | (nyala) | `off` mematikan log sesi |
-| `LCHAT_LOG_DIR` | `~/.local/state/lchat/sessions` | folder log sesi (JSONL, `0600`) |
-| `LCHAT_CONFIG` | `~/.config/lchat/config.json` | file hasil `/config` |
+| `LCHAT_BASE_URL` | `http://localhost:4000` | LiteLLM proxy (or another OpenAI-compatible endpoint) |
+| `LCHAT_API_KEY` | | LiteLLM master key / API key |
+| `LCHAT_MODEL` | `qwen3.5-35b-a3b` | model name/alias |
+| `LCHAT_CTX` | from profile | context limit (tokens) |
+| `LCHAT_TOOL_MAX` | `8000` | byte limit of tool output sent to the model |
+| `LCHAT_TEMPERATURE` | from profile | temperature override |
+| `LCHAT_MODELS` | `~/.config/lchat/models.json` | model profile file |
+| `LCHAT_LOG` | (on) | `off` disables the session log |
+| `LCHAT_LOG_DIR` | `~/.local/state/lchat/sessions` | session log folder (JSONL, `0600`) |
+| `LCHAT_CONFIG` | `~/.config/lchat/config.json` | file produced by `/config` |
 
-**File `.env`.** Semua variabel di tabel ini, ditambah `OPENROUTER_API_KEY`, bisa ditaruh di `.env`. lchat mencarinya berurutan di folder kerja, di samping binary `lchat`, lalu di `~/.config/lchat/.env`. Variabel environment yang sudah di-set tetap menang. Isinya tidak diteruskan ke perintah yang dijalankan agent. Salin `.env.example` sebagai contoh. File `.env` sudah ada di `.gitignore`.
+**The `.env` file.** All variables in this table, plus `OPENROUTER_API_KEY`, can be put in `.env`. lchat looks for it in order in the working folder, next to the `lchat` binary, then in `~/.config/lchat/.env`. Environment variables that are already set still win. Its contents are not passed on to commands run by the agent. Copy `.env.example` as an example. The `.env` file is already in `.gitignore`.
 
-**Langsung ke OpenRouter tanpa LiteLLM.** Kalau `LCHAT_BASE_URL` dan `LCHAT_API_KEY` tidak di-set tapi `OPENROUTER_API_KEY` ada, lchat otomatis memakai `https://openrouter.ai/api/v1` dengan model default `qwen/qwen3.5-35b-a3b`.
+**Directly to OpenRouter without LiteLLM.** If `LCHAT_BASE_URL` and `LCHAT_API_KEY` are not set but `OPENROUTER_API_KEY` is, lchat automatically uses `https://openrouter.ai/api/v1` with the default model `qwen/qwen3.5-35b-a3b`.
 
-Contoh config LiteLLM (vLLM, Ollama, OpenRouter) ada di `litellm.config.example.yaml`.
+Example LiteLLM configs (vLLM, Ollama, OpenRouter) are in `litellm.config.example.yaml`.
 
-## Pemakaian
+## Usage
 
 ```bash
-lchat                                   # mode interaktif
-lchat -p "test-nya gagal, perbaiki"     # sekali jalan: jawaban ke stdout, aktivitas ke stderr
-lchat --yolo -p "..."                   # tanpa konfirmasi izin (hati-hati)
-lchat config                            # atur endpoint, key, dan model (dipandu)
-lchat probe -m qwen3.8-27b --save       # deteksi perilaku model baru, simpan profilnya
+lchat                                   # interactive mode
+lchat -p "test-nya gagal, perbaiki"     # one-shot: answer to stdout, activity to stderr
+lchat --yolo -p "..."                   # no permission prompts (be careful)
+lchat config                            # set up endpoint, key, and model (guided)
+lchat probe -m qwen3.8-27b --save       # detect a new model's behavior, save its profile
 ```
 
-Flag: `-m`, `-p`, `-i <gambar>`, `--task`, `--planner-model`, `--subtask-steps 8`, `--yolo`, `--mode plan|ask|auto`, `--max-steps 30`, `--think auto|on|off`, `--quiet-think`, `--check-ts`, `--raw`, `-v`.
+Flags: `-m`, `-p`, `-i <image>`, `--task`, `--planner-model`, `--subtask-steps 8`, `--yolo`, `--mode plan|ask|auto`, `--max-steps 30`, `--think auto|on|off`, `--quiet-think`, `--check-ts`, `--raw`, `-v`.
 
-Perintah di REPL: `/config`, `/clear`, `/task <permintaan>`, `/mode [nama]`, `/img <path>`, `/paste`, `/model [filter]`, `/profile`, `/think [auto|on|off]`, `/env`, `/help`, `/exit`. Ketik `/` lalu Tab untuk melengkapi nama perintah; daftar kandidatnya muncul sendiri sambil mengetik. `/model` membuka pemilih yang sama dengan wizard, dan `/model qwen` hanya memfilternya. Akhiri baris dengan `\` untuk input multi-baris.
+REPL commands: `/config`, `/clear`, `/task <request>`, `/mode [name]`, `/img <path>`, `/paste`, `/model [filter]`, `/profile`, `/think [auto|on|off]`, `/env`, `/help`, `/exit`. Type `/` then Tab to complete command names; the list of candidates appears on its own as you type. `/model` opens the same picker as the wizard, and `/model qwen` only filters it. End a line with `\` for multi-line input.
 
-### Mode kerja
+### Work modes
 
-Tekan **Tab** saat mengetik untuk berpindah `plan → ask → auto`; prompt ikut berubah warna dan label.
+Press **Tab** while typing to switch `plan → ask → auto`; the prompt changes color and label accordingly.
 
-| Mode | write_file & edit_file | bash | Untuk apa |
+| Mode | write_file & edit_file | bash | What it's for |
 |---|---|---|---|
-| `plan` | diblokir | minta izin | model menyelidiki dulu, lalu menyodorkan rencana. Setujui dengan satu tombol `y`, dan mode otomatis pindah ke `auto` |
-| `ask` (default) | minta izin | minta izin | kerja sehari-hari |
-| `auto` | langsung jalan | minta izin | kalau kamu sudah percaya arah kerjanya |
+| `plan` | blocked | asks permission | the model investigates first, then presents a plan. Approve it with a single `y` key, and the mode automatically switches to `auto` |
+| `ask` (default) | asks permission | asks permission | everyday work |
+| `auto` | runs directly | asks permission | when you already trust the direction of the work |
 
-Aksi berisiko (lihat bagian Keamanan) tetap ditanyakan di semua mode.
+Risky actions (see the Security section) are still asked about in every mode.
 
-### Gambar
+### Images
 
-Empat cara melampirkan gambar ke pesan berikutnya:
+Four ways to attach an image to the next message:
 
 ```bash
-lchat -i screenshot.png -p "kenapa layoutnya rusak?"   # sekali jalan
+lchat -i screenshot.png -p "kenapa layoutnya rusak?"   # one-shot
 ```
 
-- **Ctrl+V** di dalam REPL: lchat membaca clipboard sendiri. Butuh `wl-clipboard` (Wayland) atau `xclip` (X11) terpasang: `sudo apt install wl-clipboard`. Kalau clipboard berisi teks, teksnya diketik ke baris; kalau berisi gambar, gambarnya dilampirkan.
-- **`/img <path>`** — bisa beberapa path sekaligus.
-- **Paste atau drag file** ke terminal: path gambar yang ada di baris otomatis dilampirkan dan dibuang dari teks pesan.
+- **Ctrl+V** inside the REPL: lchat reads the clipboard itself. Requires `wl-clipboard` (Wayland) or `xclip` (X11) to be installed: `sudo apt install wl-clipboard`. If the clipboard contains text, the text is typed into the line; if it contains an image, the image is attached.
+- **`/img <path>`** — can take several paths at once.
+- **Paste or drag a file** into the terminal: image paths on the line are automatically attached and removed from the message text.
 
-Yang perlu diingat: modelnya harus mendukung gambar (semua Qwen3.5 dan Qwen3-VL mendukung; kalau tidak, lchat memberi tahu saat server menolak). Batas per gambar 5 MB. Gambar paling membebani konteks, jadi saat konteks mulai penuh gambar lama dibuang lebih dulu dan diganti catatan.
+Things to keep in mind: the model must support images (all Qwen3.5 and Qwen3-VL do; if not, lchat tells you when the server rejects it). The limit per image is 5 MB. Images are the heaviest load on the context, so when the context starts filling up, old images are dropped first and replaced with a note.
 
-### Tombol
+### Keys
 
-Di terminal sungguhan, input memakai raw mode sendiri: panah kiri/kanan, panah atas/bawah untuk riwayat, Ctrl+A/E, Ctrl+U, Ctrl+W, Ctrl+V untuk gambar, dan Tab untuk ganti mode. Prompt izin cukup satu tombol `y`, `n`, atau `a` tanpa Enter. Ctrl+C membatalkan giliran yang sedang jalan; dua kali berturut-turut keluar; Ctrl+D juga keluar. Kalau input bukan terminal, semuanya otomatis turun ke mode baris biasa.
+In a real terminal, input uses its own raw mode: left/right arrows, up/down arrows for history, Ctrl+A/E, Ctrl+U, Ctrl+W, Ctrl+V for images, and Tab to change mode. Permission prompts need just a single `y`, `n`, or `a` key without Enter. Ctrl+C cancels the running turn; twice in a row exits; Ctrl+D also exits. If input is not a terminal, everything automatically falls back to plain line mode.
 
-## Keamanan
+## Security
 
-lchat tidak memakai sandbox; perintah berjalan dengan hak akses akun kamu. Ada tiga lapis pengaman:
+lchat does not use a sandbox; commands run with your account's privileges. There are three layers of safeguards:
 
-1. **Mode kerja.** Di `plan`, tool yang mengubah file diblokir sampai kamu menyetujui rencananya.
-2. **Izin per tool.** `bash`, `write_file`, dan `edit_file` selalu minta izin. Pilihan `a` berarti selalu izinkan tool itu selama sesi. Dengan `--yolo`, izin ini dilewati.
-3. **Konfirmasi wajib untuk aksi berisiko.** Aksi di bawah ini ditanyakan setiap kali, walaupun memakai `--yolo` atau sudah memilih `a`:
-   - membaca, menulis, atau me-list di luar folder proyek, termasuk lewat symlink;
-   - menyentuh file rahasia: `.env`, `*.pem`, `*.key`, `id_rsa`, `~/.ssh`, `~/.aws`, `.npmrc`, dan sejenisnya;
-   - perintah seperti `rm -r`/`rm -f`, `sudo`, `git push`, `git reset --hard`, `curl … | sh`, `chmod -R`, dan `npm publish`.
+1. **Work mode.** In `plan`, tools that modify files are blocked until you approve the plan.
+2. **Per-tool permission.** `bash`, `write_file`, and `edit_file` always ask for permission. Option `a` means always allow that tool for the session. With `--yolo`, these permissions are skipped.
+3. **Mandatory confirmation for risky actions.** The actions below are asked about every time, even when using `--yolo` or after choosing `a`:
+   - reading, writing, or listing outside the project folder, including via symlinks;
+   - touching secret files: `.env`, `*.pem`, `*.key`, `id_rsa`, `~/.ssh`, `~/.aws`, `.npmrc`, and the like;
+   - commands such as `rm -r`/`rm -f`, `sudo`, `git push`, `git reset --hard`, `curl … | sh`, `chmod -R`, and `npm publish`.
 
-   Kalau tidak ada terminal untuk bertanya, misalnya di mode `-p` yang di-pipe, aksi itu langsung diblokir.
-4. **Kalau izin ditolak, giliran berhenti.** Model tidak mencoba cara lain sampai kamu memberi instruksi baru.
+   If there is no terminal to ask, for example in piped `-p` mode, the action is blocked outright.
+4. **If permission is denied, the turn stops.** The model doesn't try another way until you give a new instruction.
 
-Key dari `.env` tidak diteruskan ke perintah yang dijalankan agent. Daftar di atas adalah jaring pengaman, bukan jaminan, karena perintah bisa disamarkan. Jadi baca dulu apa yang kamu setujui, dan jangan pakai `--yolo` di folder penting.
+Keys from `.env` are not passed on to commands run by the agent. The list above is a safety net, not a guarantee, because commands can be disguised. So read what you approve first, and don't use `--yolo` in important folders.
 
-## Ganti model
+## Switching models
 
-Profil bawaan yang tersedia:
+Available built-in profiles:
 
-| Profil | Cocok untuk | Cara switch thinking |
+| Profile | Suitable for | How thinking is switched |
 |---|---|---|
 | `qwen3*` | Qwen3, 3.5, 3.8, … | `chat_template_kwargs.enable_thinking` (vLLM/SGLang) |
-| `qwen3*` + URL OpenRouter | Qwen lewat OpenRouter | `reasoning.enabled` |
-| `*qwen3*instruct*` | varian instruct | tanpa thinking |
-| `*thinking*` | varian thinking | selalu thinking |
-| `*` | model lain | tanpa switch |
+| `qwen3*` + OpenRouter URL | Qwen via OpenRouter | `reasoning.enabled` |
+| `*qwen3*instruct*` | instruct variants | no thinking |
+| `*thinking*` | thinking variants | always thinking |
+| `*` | other models | no switch |
 
-Untuk model atau backend lain, jalankan:
+For other models or backends, run:
 
 ```bash
 lchat probe -m <model> --save
 ```
 
-Probe mencoba setiap cara switch thinking, mengecek apakah reasoning keluar sebagai field `reasoning_content` atau tag `<think>`, lalu mengetes tool call native. Hasilnya disimpan sebagai profil di `~/.config/lchat/models.json`. File itu bisa diedit manual (komentar `//` diperbolehkan):
+The probe tries every way of switching thinking, checks whether reasoning comes out as a `reasoning_content` field or a `<think>` tag, then tests native tool calls. The result is saved as a profile in `~/.config/lchat/models.json`. That file can be edited manually (`//` comments are allowed):
 
 ```jsonc
 {"profiles": [{
-  "match": "qwen3.8*",                 // glob nama model
-  "match_url": "*localhost:4000*",     // opsional: hanya untuk endpoint ini
+  "match": "qwen3.8*",                 // model name glob
+  "match_url": "*localhost:4000*",     // optional: only for this endpoint
   "thinking": {"control": "chat_template_kwargs", "kwarg": "enable_thinking", "history": "drop"},
   "sampling": {"think": {"temperature": 0.6, "top_p": 0.95}, "no_think": {"temperature": 0.7, "top_p": 0.8}},
   "tool_format": ["native", "hermes", "qwen_xml", "json_block"],
@@ -204,19 +204,18 @@ Probe mencoba setiap cara switch thinking, mengecek apakah reasoning keluar seba
 }]}
 ```
 
-Nilai `control` yang tersedia: `body` (`on_body`/`off_body` digabung ke request), `chat_template_kwargs`, `reasoning_effort`, `prompt_switch` (`/think`, `/no_think`), `always`, dan `none`.
+Available `control` values: `body` (`on_body`/`off_body` merged into the request), `chat_template_kwargs`, `reasoning_effort`, `prompt_switch` (`/think`, `/no_think`), `always`, and `none`.
 
 ## Development
 
 ```bash
-make test     # go vet + unit test (termasuk fake LLM server & probe)
+make test     # go vet + unit tests (including fake LLM server & probe)
 make build
 ```
 
-### Dokumentasi desain
+### Design documentation
 
-Kalau kamu (atau agen berikutnya) akan mengubah kodenya, mulai dari
-[`docs/harness.md`](docs/harness.md) — alasan di balik bentuk loop agennya,
-invarian yang tidak boleh dilanggar, dan apa yang sengaja belum dikerjakan.
-Indeksnya ada di [`docs/`](docs/README.md).
-
+If you (or the next agent) are going to change the code, start from
+[`docs/harness.md`](docs/harness.md) — the reasoning behind the shape of the agent loop,
+the invariants that must not be broken, and what has deliberately not been done yet.
+The index is in [`docs/`](docs/README.md).
