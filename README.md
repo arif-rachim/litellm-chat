@@ -1,6 +1,10 @@
 # lchat
 
-A mini coding agent for the terminal, a small version of Claude Code. A single static Go binary (~7 MB, no dependencies). Models are called through LiteLLM or any other OpenAI-compatible endpoint. Designed for small models such as Qwen3.5-35B-A3B.
+lchat is a small coding agent for the terminal, modelled on Claude Code but built for small open-weight models such as Qwen3.5-35B-A3B that lose their way on long, multi-step coding tasks. It runs a tool loop (`bash`, `read_file`, `list_files`, `write_file`, `edit_file`, `ask_user`, `todo`) against any OpenAI-compatible endpoint, typically a LiteLLM proxy or OpenRouter, and surrounds the model with a harness that repairs broken tool calls, logs every attempt, detects loops and oscillation, escalates when the same failure repeats, and compacts the context after each verified milestone. It is written in Go using only the standard library and builds to a single static binary of about 7 MB for Linux amd64 and arm64. It is aimed at developers who want to run a coding agent on self-hosted or cheap models. It is an early-stage personal project with a written roadmap in `docs/rencana.md`; the design notes in `docs/` are written in Indonesian.
+
+> Status: early development.
+
+## Features
 
 The harness is what keeps small models on track:
 
@@ -33,6 +37,10 @@ The harness is what keeps small models on track:
 - **Auto-check** after writing or editing a file: `node --check`, JSON validation, and `py_compile`. `tsc` only runs with `--check-ts`.
 - **Session log.** Every session is written to `~/.local/state/lchat/sessions/<time>.jsonl`: every request along with what the harness added, every reply and tool call, every tool result, every harness correction, every screen line. It has one purpose: to be taken into analysis to see where the model (or its harness) wastes steps. `/log` shows its path; `--no-log` or `LCHAT_LOG=off` turns it off. It contains tool output, so don't share it raw.
 - **Model profiles.** Everything model-specific (how to switch thinking, sampling, tool call format, context size) lives in a profile. If you switch models, run `lchat probe`.
+
+## Tech stack
+
+Go 1.22 (standard library only) · OpenAI-compatible chat completions API · LiteLLM proxy or OpenRouter · Qwen3 / Qwen3.5 model profiles
 
 ## Distribution
 
@@ -211,6 +219,29 @@ Available `control` values: `body` (`on_body`/`off_body` merged into the request
 ```bash
 make test     # go vet + unit tests (including fake LLM server & probe)
 make build
+```
+
+### Project structure
+
+All code is one flat `main` package:
+
+```text
+main.go            flags, .env loading, REPL and one-shot entry point
+agent.go           the agent loop: requests, tool dispatch, permissions
+reason.go          per-turn state: attempt log, failure signatures, escalation
+repair.go          JSON repair, <think> splitting, text-to-tool-call parsing
+tools.go           tool definitions and implementations (bash, files, ask_user, todo)
+guard.go           risky-action detection (paths outside project, secrets, rm -r, …)
+check.go           post-edit syntax checks (node --check, JSON, py_compile, tsc)
+plan.go, planner.go, subtask.go   /task decomposition and verified subtasks
+profile.go         per-model profiles and the `lchat probe` detector
+llm.go             OpenAI-compatible streaming client
+envinfo.go         environment summary sent before the first step
+input.go, render.go  raw-mode line editor and terminal output
+wizard.go, config.go  `lchat config` wizard and config.json
+attach.go          image attachments (clipboard, /img, pasted paths)
+log.go             JSONL session log
+docs/              design notes, roadmap and user guide (Indonesian)
 ```
 
 ### Design documentation
