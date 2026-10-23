@@ -1,6 +1,6 @@
 # lchat
 
-lchat is a small coding agent for the terminal, modelled on Claude Code but built for small open-weight models such as Qwen3.5-35B-A3B that lose their way on long, multi-step coding tasks. It runs a tool loop (`bash`, `read_file`, `list_files`, `write_file`, `edit_file`, `ask_user`, `todo`) against any OpenAI-compatible endpoint, typically a LiteLLM proxy or OpenRouter, and surrounds the model with a harness that repairs broken tool calls, logs every attempt, detects loops and oscillation, escalates when the same failure repeats, and compacts the context after each verified milestone. It is written in Go using only the standard library and builds to a single static binary of about 7 MB for Linux amd64 and arm64. It is aimed at developers who want to run a coding agent on self-hosted or cheap models. It is an early-stage personal project with a written roadmap in `docs/rencana.md`; the design notes in `docs/` are written in Indonesian.
+lchat is a small coding agent for the terminal, modelled on Claude Code but built for small open-weight models such as Qwen3.5-35B-A3B that lose their way on long, multi-step coding tasks. It runs a tool loop (`bash`, `read_file`, `list_files`, `write_file`, `edit_file`, `ask_user`, `todo`) against any OpenAI-compatible endpoint, typically a LiteLLM proxy or OpenRouter, and surrounds the model with a harness that repairs broken tool calls, logs every attempt, detects loops and oscillation, escalates when the same failure repeats, and compacts the context after each verified milestone. It is written in Go using only the standard library and builds to a single static binary of about 7 MB for Linux and Windows (amd64 and arm64). It is aimed at developers who want to run a coding agent on self-hosted or cheap models. It is an early-stage personal project with a written roadmap in `docs/rencana.md`; the design notes in `docs/` are written in Indonesian.
 
 > Status: early development.
 
@@ -54,9 +54,13 @@ The output is in `dist/`:
 
 | File | Size | For |
 |---|---|---|
-| `lchat-linux-amd64` | 7.2 MB (3.1 MB gzipped) | Intel or AMD PCs/servers |
-| `lchat-linux-arm64` | 6.7 MB (2.8 MB gzipped) | Raspberry Pi, ARM servers |
+| `lchat-linux-amd64` | 7.4 MB (3.2 MB gzipped) | Intel or AMD PCs/servers |
+| `lchat-linux-arm64` | 6.9 MB (2.9 MB gzipped) | Raspberry Pi, ARM servers |
+| `lchat-windows-amd64.exe` | 7.7 MB | Windows 10/11 on Intel or AMD |
+| `lchat-windows-arm64.exe` | 6.9 MB | Windows on ARM |
 | `SHA256SUMS` | | for verifying the download |
+
+Pushing a `v*` tag does the same in GitHub Actions (`.github/workflows/release.yml`): the tests run on Linux and Windows, then the files above are published as a GitHub Release.
 
 On the target machine:
 
@@ -65,6 +69,8 @@ install -Dm755 lchat-linux-amd64 ~/.local/bin/lchat
 lchat -version
 lchat config        # set up endpoint, key, and model
 ```
+
+On Windows, rename the file to `lchat.exe`, put it in a folder on your `PATH`, and run it in Windows Terminal or a recent console. The `bash` tool needs a `bash` on the `PATH`, such as the one from Git for Windows. Ctrl+V image paste is Linux-only for now.
 
 Something to keep in mind when sharing: don't copy `.env` or `~/.config/lchat/config.json` along with it, because both contain API keys. The binary itself doesn't contain any key.
 

@@ -297,7 +297,7 @@ func runWith(a *Agent, input string, sigs chan os.Signal, run func(context.Conte
 	case err != nil && isCanceled(err):
 		a.ui.EndResponse()
 		a.ui.Warn("dibatalkan")
-	case err != nil && strings.Contains(err.Error(), "connection refused"):
+	case err != nil && (strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "actively refused")): // Linux, Windows
 		a.ui.Info("tidak ada server di " + a.cfg.BaseURL + ". Jalankan LiteLLM di alamat itu, atau atur endpoint lain dengan `lchat config` / /config.")
 	case err != nil && strings.Contains(err.Error(), "HTTP 401"):
 		a.ui.Info("key ditolak endpoint. Perbarui dengan `lchat config` / /config.")
@@ -419,6 +419,7 @@ func (in *input) readLine(sigs chan os.Signal) (string, error) {
 // line asks a free-text question (used by ask_user).
 func (in *input) line(ctx context.Context, p string) (string, error) {
 	if in.ed != nil {
+		in.ed.DropTypeahead()
 		s, err := in.ed.ReadLine(func() string { return in.ui.c(sgrYellow, p) })
 		in.ui.MarkNewline()
 		return s, err
@@ -452,6 +453,7 @@ func (in *input) confirm(ctx context.Context, p string) (string, error) {
 		keys = "yn"
 	}
 	if in.ed != nil {
+		in.ed.DropTypeahead()
 		s, err := in.ed.ReadChoice(in.ui.c(sgrYellow, p), keys)
 		in.ui.MarkNewline()
 		return s, err

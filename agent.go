@@ -214,6 +214,7 @@ func errString(err error) string {
 // calls it owns the context it runs in; it never rewrites a.msgs[:turnStart+1]
 // except through checkpoint.
 func (a *Agent) loop(ctx context.Context, st *turnState, maxSteps int) (loopOutcome, error) {
+	known := func(n string) bool { return toolByName(normalizeToolName(n)) != nil }
 	for st.step = 0; st.step < maxSteps; st.step++ {
 		a.fitContext()
 		think := wantThink(a.cfg.Think, st)
@@ -229,8 +230,20 @@ func (a *Agent) loop(ctx context.Context, st *turnState, maxSteps int) (loopOutc
 		calls, content := resp.ToolCalls, resp.Content
 		fromText := false
 		if len(calls) == 0 {
-			if c, rest := parseTextToolCalls(content, a.profile.ToolFormat, func(n string) bool { return toolByName(normalizeToolName(n)) != nil }); len(c) > 0 {
+			if c, rest := parseTextToolCalls(content, a.profile.ToolFormat, known); len(c) > 0 {
 				calls, content, fromText = c, rest, true
+			}
+		}
+		fromThink := false
+		if len(calls) == 0 && content == "" && resp.Reasoning != "" {
+			// Qwen sometimes writes its <tool_call> inside the think block and
+			// then stops with an empty answer. Treated as an empty reply, an
+			// ask_user written there never reached the screen: the user saw a
+			// frozen "berpikir…", and the model was told to continue, so it
+			// picked an option itself. Only the last call counts: reasoning
+			// also holds the calls the model weighed and dropped.
+			if c, _ := parseTextToolCalls(resp.Reasoning, a.profile.ToolFormat, known); len(c) > 0 {
+				calls, fromThink = c[len(c)-1:], true
 			}
 		}
 		ensureIDs(calls, st.step)
@@ -241,6 +254,9 @@ func (a *Agent) loop(ctx context.Context, st *turnState, maxSteps int) (loopOutc
 		a.msgs = append(a.msgs, am)
 		if fromText {
 			a.ui.Harness("tool call ditulis sebagai teks, dikonversi otomatis")
+		}
+		if fromThink {
+			a.ui.Harness("tool call ditulis di dalam reasoning, dikonversi otomatis")
 		}
 
 		if len(calls) == 0 {
@@ -787,7 +803,11 @@ func (a *Agent) execTool(ctx context.Context, c ToolCall, st *turnState) ToolRes
 			"Use the result you already have: try a different approach, or give your final answer.", ""))
 	}
 
-	a.ui.ToolStart(name, summary)
+	if name == "ask_user" {
+		a.ui.ToolStart(name, "") // runAsk shows the whole question itself
+	} else {
+		a.ui.ToolStart(name, summary)
+	}
 	risk := a.toolRisk(name, args)
 	if (tool.Perm || risk != "") && !a.allowed(ctx, name, risk) {
 		res := ToolResult{Denied: true, Summary: name + " " + summary, Status: "tidak diizinkan",

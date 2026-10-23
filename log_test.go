@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestSessionLogRecordsATurn(t *testing.T) {
 	a.RunTurn(context.Background(), "coba")
 	lg.Close()
 
-	if st, _ := os.Stat(lg.Path); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(lg.Path); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows has no mode bits
 		t.Fatalf("log memuat output tool, izinnya harus 0600: %v", st.Mode().Perm())
 	}
 	evs := readEvents(t, lg.Path)

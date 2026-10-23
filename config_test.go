@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,7 @@ func TestConfigFileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, _ := os.Stat(path)
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows has no mode bits
 		t.Fatalf("config holds a key, permissions = %v", st.Mode().Perm())
 	}
 	got, err := LoadConfigFile(path)

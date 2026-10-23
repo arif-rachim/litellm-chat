@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -367,7 +368,7 @@ func TestVerifierTouchFlagSkipsFileChecks(t *testing.T) {
 
 func TestSummaryUsesRelativePaths(t *testing.T) {
 	a, f, dir, screen := newFakeAgent(t)
-	f.replies = []string{toolReply("write_file", `{"path": "`+dir+`/abs.txt", "content": "x"}`), textReply("ok")}
+	f.replies = []string{toolReply("write_file", `{"path": "`+filepath.ToSlash(dir)+`/abs.txt", "content": "x"}`), textReply("ok")}
 	a.RunTurn(context.Background(), "tulis")
 	if !strings.Contains(screen.String(), "write_file  abs.txt") {
 		t.Fatalf("ringkasan harus relatif terhadap proyek:\n%s", screen)

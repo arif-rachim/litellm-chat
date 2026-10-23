@@ -67,6 +67,7 @@ func realPath(p string) string {
 
 func within(p, root string) bool {
 	r, err := filepath.Rel(root, p)
+	r = filepath.ToSlash(r) // Windows answers ..\x
 	return err == nil && r != ".." && !strings.HasPrefix(r, "../")
 }
 
@@ -75,7 +76,7 @@ func (a *Agent) pathRisk(p string) string {
 	real := realPath(p)
 	if !within(real, realPath(a.cwd)) {
 		if home, err := os.UserHomeDir(); err == nil && within(real, home) {
-			real = "~/" + strings.TrimPrefix(real, home+"/")
+			real = "~/" + filepath.ToSlash(strings.TrimPrefix(real, home+string(filepath.Separator)))
 		}
 		return "di luar folder proyek: " + real
 	}

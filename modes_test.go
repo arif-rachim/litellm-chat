@@ -48,6 +48,48 @@ func TestAskUserTool(t *testing.T) {
 	}
 }
 
+func TestAskUserEmptyEnterIsAskedAgain(t *testing.T) {
+	long := "Konfigurasi bisa dibaca dari config.yaml di root, dari environment variable, atau dari flag baris perintah. Mana yang dipakai?"
+	reply := toolReply("ask_user", `{"question": "`+long+`", "options": ["config.yaml", "env", "flag"]}`)
+
+	// A stray Enter is not a decision: the question is asked again.
+	a, _, _, screen := newFakeAgent(t, reply, textReply("ok"))
+	answers := []string{"", "2"}
+	var prompts []string
+	a.askLine = func(_ context.Context, p string) (string, error) {
+		prompts = append(prompts, p)
+		s := answers[0]
+		answers = answers[1:]
+		return s, nil
+	}
+	a.RunTurn(context.Background(), "go")
+	if tm := toolMsgs(a); len(prompts) != 2 || !strings.Contains(tm[0].Content, "The user answered: env") {
+		t.Fatalf("prompts %q, result %+v", prompts, tm)
+	}
+	if !strings.Contains(screen.String(), long) {
+		t.Fatalf("the question must be shown in full:\n%s", screen)
+	}
+
+	// Two empty answers hand the choice to the model.
+	a, _, _, _ = newFakeAgent(t, reply, textReply("ok"))
+	a.askLine = func(context.Context, string) (string, error) { return "", nil }
+	a.RunTurn(context.Background(), "go")
+	if tm := toolMsgs(a); !strings.Contains(tm[0].Content, "pressed enter without answering") {
+		t.Fatalf("second empty answer: %q", tm[0].Content)
+	}
+}
+
+func TestEditorDropsTypeahead(t *testing.T) {
+	// Enter and a letter pressed while the model was still running.
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader("\rx\r")), out: &out}
+	e.in.Peek(1)
+	e.DropTypeahead()
+	if line, err := e.ReadLine(func() string { return "› " }); err != io.EOF || line != "" {
+		t.Fatalf("typeahead answered the prompt: %q, %v", line, err)
+	}
+}
+
 func TestPlanMode(t *testing.T) {
 	a, f, dir, _ := newFakeAgent(t,
 		toolReply("write_file", `{"path": "x.js", "content": "x"}`),

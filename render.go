@@ -3,12 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 const (
@@ -23,14 +20,6 @@ const (
 	sgrCyan    = "\x1b[36m"
 	sgrHeading = "\x1b[1;34m"
 )
-
-// isTTY reports whether f is a terminal. A character-device check is not
-// enough: /dev/null is one too.
-func isTTY(f *os.File) bool {
-	var t syscall.Termios
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
-	return errno == 0
-}
 
 // ---------------------------------------------------------------------------
 // Streaming markdown renderer. It keeps only a few pending characters so text
@@ -407,6 +396,14 @@ func (u *UI) ToolDone(r ToolResult) {
 	}
 	for _, d := range r.Detail {
 		fmt.Fprintf(u.log, "  %s\n", u.c(sgrDim, d))
+	}
+}
+
+// Question shows an ask_user question in full: the tool line above it is
+// clipped, and a clipped question is one the user cannot answer.
+func (u *UI) Question(q string) {
+	for _, l := range strings.Split(strings.TrimSpace(q), "\n") {
+		fmt.Fprintf(u.log, "  %s\n", u.c(sgrBold, l))
 	}
 }
 

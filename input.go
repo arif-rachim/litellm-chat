@@ -7,40 +7,13 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"syscall"
 	"unicode"
-	"unsafe"
 )
 
 // A small raw-mode line editor. It is what makes Tab a key the program can see
 // (in cooked mode the terminal only hands over whole lines), and it also gives
 // history and single-key confirmations. Raw mode is entered only while reading,
 // so Ctrl+C keeps working as SIGINT everywhere else.
-
-type termState struct {
-	fd  uintptr
-	old syscall.Termios
-}
-
-func rawMode(f *os.File) *termState {
-	var t syscall.Termios
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t))); e != 0 {
-		return nil
-	}
-	old := t
-	t.Lflag &^= syscall.ICANON | syscall.ECHO | syscall.ISIG | syscall.IEXTEN
-	t.Cc[syscall.VMIN], t.Cc[syscall.VTIME] = 1, 0
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCSETS, uintptr(unsafe.Pointer(&t))); e != 0 {
-		return nil
-	}
-	return &termState{f.Fd(), old}
-}
-
-func (s *termState) restore() {
-	if s != nil {
-		syscall.Syscall(syscall.SYS_IOCTL, s.fd, syscall.TCSETS, uintptr(unsafe.Pointer(&s.old)))
-	}
-}
 
 type Editor struct {
 	in      *bufio.Reader
@@ -62,6 +35,15 @@ type Completion struct{ Name, Args, Help string }
 
 func NewEditor(f *os.File, out io.Writer) *Editor {
 	return &Editor{in: bufio.NewReader(f), file: f, out: out}
+}
+
+// DropTypeahead discards keys pressed before a question was on screen. While
+// the model runs the terminal is in cooked mode and keeps what is typed; an
+// Enter pressed at a screen that looked stuck would otherwise answer the next
+// question before the user has read it.
+func (e *Editor) DropTypeahead() {
+	e.in.Discard(e.in.Buffered())
+	flushInput(e.file)
 }
 
 // readKey returns a key name, and the rune itself for "char".
@@ -231,8 +213,6 @@ func (e *Editor) menu(line string, w int) []string {
 	return rows
 }
 
-type winsize struct{ row, col, xpixel, ypixel uint16 }
-
 // width is how many columns the terminal has. Without a terminal (tests) the
 // classic 80 is assumed.
 func (e *Editor) width() int {
@@ -242,11 +222,10 @@ func (e *Editor) width() int {
 	if e.file == nil {
 		return 80
 	}
-	var ws winsize
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, e.file.Fd(), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws))); err != 0 || ws.col == 0 {
-		return 80
+	if w := termWidth(e.file); w > 0 {
+		return w
 	}
-	return int(ws.col)
+	return 80
 }
 
 // Column widths. A terminal gives a CJK ideograph or an emoji two cells, a

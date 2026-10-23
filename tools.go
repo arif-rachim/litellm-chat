@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -359,7 +358,7 @@ func (a *Agent) resolve(p string) string {
 
 func (a *Agent) rel(p string) string {
 	if r, err := filepath.Rel(a.cwd, p); err == nil && !strings.HasPrefix(r, "..") {
-		return r
+		return filepath.ToSlash(r) // the model works in bash, on Windows too
 	}
 	return p
 }
@@ -442,8 +441,7 @@ func runBash(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 	cmd := exec.CommandContext(cctx, "bash", "-c", command)
 	cmd.Dir = a.cwd
 	cmd.Env = append(childEnv(), "CI=true", "PAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1", "FORCE_COLOR=0", "TERM=dumb")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	killTree(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	out := &capBuffer{max: 4 << 20}
 	cmd.Stdout, cmd.Stderr = out, out
@@ -806,13 +804,21 @@ func runAsk(ctx context.Context, a *Agent, args map[string]any) ToolResult {
 		return ToolResult{Status: "tidak ada user interaktif",
 			Output: "[harness] Nobody can answer: this is a non-interactive run. Pick the safest sensible option yourself, say in your final answer which one you picked and why, and continue."}
 	}
+	a.ui.Question(str(args, "question"))
 	a.ui.Options(opts)
-	ans, err := a.askLine(ctx, "  jawab (nomor atau teks bebas) › ")
-	if err != nil {
-		return ToolResult{Denied: true, Status: "dibatalkan",
-			Output: "[harness] The user did not answer and stopped the turn. Wait for their next message."}
+	// One empty Enter is asked again: it is usually a key pressed while the
+	// screen looked stuck, not a decision to let the model choose.
+	var ans string
+	for _, p := range []string{"  jawab (nomor atau teks bebas) › ", "  belum ada jawaban; ketik jawaban, atau Enter lagi untuk menyerahkan ke model › "} {
+		s, err := a.askLine(ctx, p)
+		if err != nil {
+			return ToolResult{Denied: true, Status: "dibatalkan",
+				Output: "[harness] The user did not answer and stopped the turn. Wait for their next message."}
+		}
+		if ans = strings.TrimSpace(s); ans != "" {
+			break
+		}
 	}
-	ans = strings.TrimSpace(ans)
 	if n, e := strconv.Atoi(ans); e == nil && n >= 1 && n <= len(opts) {
 		ans = opts[n-1]
 	}

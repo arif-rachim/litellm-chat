@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestPathRisk(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
 	os.MkdirAll(outside, 0o755)
 	os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644)
-	os.Symlink(outside, filepath.Join(dir, "link"))
+	symlinked := os.Symlink(outside, filepath.Join(dir, "link")) == nil // Windows needs a privilege for it
 	a := testAgentIn(t, dir)
 	for p, want := range map[string]string{
 		"src/index.js":        "",
@@ -39,6 +40,9 @@ func TestPathRisk(t *testing.T) {
 		"link/secret.txt":     "di luar folder proyek", // symlink escape
 		"src/../../outside/x": "di luar folder proyek",
 	} {
+		if (p == "link/secret.txt" && !symlinked) || (p == "/etc/passwd" && runtime.GOOS == "windows") {
+			continue // no symlink; no drive letter, so not absolute on Windows
+		}
 		got := a.pathRisk(a.resolve(p))
 		if (want == "") != (got == "") || !strings.Contains(got, want) {
 			t.Errorf("pathRisk(%q) = %q, want %q", p, got, want)

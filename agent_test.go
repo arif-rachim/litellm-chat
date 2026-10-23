@@ -1012,3 +1012,35 @@ func TestBareTextToolCallsAreExecuted(t *testing.T) {
 		t.Fatalf("panggilan yang dikenali tidak boleh ditegur (%d permintaan):\n%s", len(f.reqs), screen)
 	}
 }
+
+func TestToolCallInsideReasoningIsExecuted(t *testing.T) {
+	// Qwen wrote ask_user inside its think block and answered nothing. Treated
+	// as an empty reply, the question never reached the user.
+	a, f, _, screen := newFakeAgent(t,
+		sse(delta(map[string]any{"reasoning_content": "Maybe read it first:\n<tool_call>\n{\"name\": \"list_files\", \"arguments\": {}}\n</tool_call>\nNo, better ask.\n<tool_call>\n{\"name\": \"ask_user\", \"arguments\": {\"question\": \"Pakai formik?\", \"options\": [\"ya\", \"tidak\"]}}\n</tool_call>"})),
+		textReply("Oke."),
+	)
+	var asked int
+	a.askLine = func(context.Context, string) (string, error) { asked++; return "1", nil }
+	a.RunTurn(context.Background(), "buat form")
+	tm := toolMsgs(a)
+	if asked != 1 || len(tm) != 1 || !strings.Contains(tm[0].Content, "The user answered: ya") {
+		t.Fatalf("only the last call in the reasoning should run (asked %d): %+v", asked, tm)
+	}
+	if !strings.Contains(screen.String(), "di dalam reasoning") || strings.Contains(screen.String(), "balasan kosong") {
+		t.Fatalf("screen:\n%s", screen)
+	}
+	if len(f.reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(f.reqs))
+	}
+
+	// An answer in content wins: calls the reasoning only mentions are not run.
+	a, _, _, _ = newFakeAgent(t,
+		sse(delta(map[string]any{"reasoning_content": "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.txt\"}}\n</tool_call>"}),
+			delta(map[string]any{"content": "Tidak perlu membaca apa pun."})),
+	)
+	a.RunTurn(context.Background(), "go")
+	if tm := toolMsgs(a); len(tm) != 0 {
+		t.Fatalf("reasoning calls ran despite an answer: %+v", tm)
+	}
+}
